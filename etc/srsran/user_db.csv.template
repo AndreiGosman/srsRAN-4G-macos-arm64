@@ -1,0 +1,15 @@
+# HSS subscriber database.
+# Format: Name,Auth,IMSI,Key,OP_Type,OP/OPc,AMF,SQN,QCI,IP_alloc
+#
+# Generate a key and an operator code, and put the same two values in the
+# [usim] section of ue.conf:
+#
+#   K=$(openssl rand -hex 16)
+#   OPc=$(openssl rand -hex 16)
+#
+# Auth is 'mil' for MILENAGE or 'xor' for the test algorithm. MILENAGE is the
+# realistic choice and is the only one for which OPc means anything.
+#
+# Field order is easy to get wrong: OP_Type is 'opc' or 'op', and IP_alloc is
+# 'dynamic' or a literal address. An SQN in the IP_alloc position is rejected.
+ue1,mil,001010000000001,<32-hex-chars>,opc,<32-hex-chars>,9001,000000001234,7,dynamic

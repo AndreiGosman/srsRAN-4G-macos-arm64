@@ -1,0 +1,63 @@
+#####################################################################
+# srsUE, Faza 1 loopback ZeroMQ. macOS ARM64.
+#
+# The ZeroMQ ports mirror enb.conf: this transmits where the eNB receives.
+#####################################################################
+
+[rf]
+freq_offset = 0
+tx_gain = 80
+rx_gain = 40
+# No srate here on purpose. The PHY derives its rate from the cell width:
+# 25 PRB is 5.76 MHz. base_srate in device_args is the rate carried over the
+# ZeroMQ link, 11.52 MHz, and the radio decimates by two down to what the PHY
+# asked for. Setting srate to the link rate forces x1 decimation, so the PHY
+# runs at the 50 PRB rate for a 25 PRB cell and everything falls behind real
+# time: uplink messages arrive over a second late and the attach times out.
+nof_antennas = 1
+
+device_name = zmq
+device_args = tx_port=tcp://*:2101,rx_port=tcp://localhost:2000,id=ue,base_srate=11.52e6
+
+[rat.eutra]
+dl_earfcn = 1300
+nof_carriers = 1
+
+[rat.nr]
+nof_carriers = 0
+
+[pcap]
+enable = none
+mac_filename = $SRSRAN_PREFIX/logs/faza1-ue-mac.pcap
+nas_filename = $SRSRAN_PREFIX/logs/faza1-ue-nas.pcap
+
+[log]
+all_level = info
+phy_lib_level = none
+all_hex_limit = 32
+# srslog buffers to a file and only flushes on exit, so a running
+# process shows an empty log. stdout is written straight through and
+# the launcher tees it to disk.
+filename = stdout
+file_max_size = -1
+
+[usim]
+mode = soft
+algo = milenage
+opc  = <32-hex-chars>   # must match user_db.csv
+k    = <32-hex-chars>   # must match user_db.csv
+imsi = 001010000000001
+imei = 353490069873310
+
+[rrc]
+
+[nas]
+
+[gw]
+# The kernel names utun interfaces, so this value cannot be honoured on macOS.
+# srsue logs the name it actually received; read it from the log.
+netns =
+ip_devname = tun_srsue
+
+[gui]
+enable = false

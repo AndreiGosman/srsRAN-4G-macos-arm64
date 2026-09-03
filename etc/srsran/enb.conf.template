@@ -1,0 +1,63 @@
+#####################################################################
+# srsENB, Faza 1 loopback ZeroMQ. macOS ARM64.
+#
+# Band 3 FDD, DL EARFCN 1300, 25 PRB, which is 5 MHz. Enough to validate the
+# attach and light enough for a ZeroMQ link.
+#
+# gtp_bind_addr and the EPC's gtpu_bind_addr both bind GTP-U on port 2152, so
+# they need different addresses. 127.0.1.1 is not bound by default on macOS;
+# run-faza1.sh adds it as an alias on lo0.
+#####################################################################
+
+[enb]
+enb_id = 0x19B
+mcc = 001
+mnc = 01
+# S1AP runs over SCTP through libsctp-compat, and usrsctp does not accept
+# traffic addressed to a loopback alias: 127.0.0.1 works, a real interface
+# address works, 127.0.1.100 does not, even though plain UDP to it does. The
+# SCTP endpoints therefore stay on 127.0.0.1. There is no conflict: the MME
+# binds port 36412 and the eNB binds an ephemeral port.
+mme_addr = 127.0.0.1
+s1c_bind_addr = 127.0.0.1
+# GTP-U is plain UDP and keeps its own address, so port 2152 does not collide
+# with the EPC's.
+gtp_bind_addr = 127.0.1.1
+s1c_bind_port = 0
+n_prb = 25
+tm = 1
+nof_ports = 1
+
+[enb_files]
+sib_config = $SRSRAN_PREFIX/etc/srsran/sib.conf
+rr_config  = $SRSRAN_PREFIX/etc/srsran/rr.conf
+rb_config  = $SRSRAN_PREFIX/etc/srsran/rb.conf
+
+[rf]
+tx_gain = 80
+rx_gain = 40
+# No srate here on purpose. The PHY derives its rate from the cell width:
+# 25 PRB is 5.76 MHz. base_srate in device_args is the rate carried over the
+# ZeroMQ link, 11.52 MHz, and the radio decimates by two down to what the PHY
+# asked for. Setting srate to the link rate forces x1 decimation, so the PHY
+# runs at the 50 PRB rate for a 25 PRB cell and everything falls behind real
+# time: uplink messages arrive over a second late and the attach times out.
+
+device_name = zmq
+device_args = fail_on_disconnect=true,tx_port=tcp://*:2000,rx_port=tcp://localhost:2101,id=enb,base_srate=11.52e6
+
+[pcap]
+enable = false
+filename = $SRSRAN_PREFIX/logs/faza1-enb.pcap
+
+[log]
+all_level = info
+all_hex_limit = 32
+# srslog buffers to a file and only flushes on exit, so a running
+# process shows an empty log. stdout is written straight through and
+# the launcher tees it to disk.
+filename = stdout
+file_max_size = -1
+
+[gui]
+enable = false

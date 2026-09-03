@@ -1,0 +1,54 @@
+#####################################################################
+# srsEPC, Faza 1 loopback ZeroMQ. macOS ARM64.
+#
+# Two deviations from the upstream example, both forced by Darwin:
+#   - the SCTP stack is libsctp-compat over usrsctp, which needs a UDP
+#     encapsulation port of its own per process. See run-faza1.sh.
+#   - 127.0.1.100 is not bound by default on macOS, unlike Linux where the
+#     whole 127.0.0.0/8 is on lo. run-faza1.sh adds it as an alias on lo0.
+#####################################################################
+
+[mme]
+mme_code = 0x1a
+mme_group = 0x0001
+tac = 0x0007
+mcc = 001
+mnc = 01
+# S1AP runs over SCTP through libsctp-compat, and usrsctp does not accept
+# traffic addressed to a loopback alias: 127.0.0.1 works, a real interface
+# address works, 127.0.1.100 does not, even though plain UDP to it does. The
+# SCTP endpoints therefore stay on 127.0.0.1. There is no conflict: the MME
+# binds port 36412 and the eNB binds an ephemeral port.
+mme_bind_addr = 127.0.0.1
+apn = srsapn
+dns_addr = 8.8.8.8
+encryption_algo = EEA0
+integrity_algo = EIA1
+paging_timer = 2
+request_imeisv = false
+lac = 0x0006
+
+[hss]
+db_file = $SRSRAN_PREFIX/var/user_db.csv
+
+[spgw]
+# GTP-U is plain UDP, which reaches a loopback alias without trouble, so this
+# keeps its own address and does not collide with the eNB's port 2152.
+gtpu_bind_addr   = 127.0.1.100
+sgi_if_addr      = 172.16.0.1
+# The kernel names utun interfaces, so this value cannot be honoured on macOS.
+# srsepc logs the name it actually received; read it from the log.
+sgi_if_name      = srs_spgw_sgi
+max_paging_queue = 100
+
+[pcap]
+enable   = false
+filename = $SRSRAN_PREFIX/logs/faza1-epc.pcap
+
+[log]
+all_level = info
+all_hex_limit = 32
+# srslog buffers to a file and only flushes on exit, so a running
+# process shows an empty log. stdout is written straight through and
+# the launcher tees it to disk.
+filename = stdout
