@@ -1,0 +1,340 @@
+/**
+ * timerfd for Darwin, backed by kqueue.
+ *
+ * Copyright 2013-2023 Software Radio Systems Limited
+ * Darwin compatibility layer added 2026 by Andrei Gosman.
+ *
+ * This file is part of srsRAN. Same licence as the rest of the tree.
+ *
+ * Darwin has no timerfd. kqueue EVFILT_TIMER is the native equivalent and
+ * is used here as the timing engine, but a kqueue descriptor cannot be
+ * read(): it only reports readiness. srsRAN reads the expiration count out
+ * of the descriptor in srsran/common/threads.h, so the descriptor handed
+ * back to the caller is the read end of a pipe instead. One background
+ * thread waits on the kqueue and writes the count into the matching pipe.
+ * The result behaves like a timerfd for both read() and poll(), and close()
+ * is the ordinary system call.
+ *
+ * Divergence worth knowing: Linux coalesces expirations, so one read()
+ * returns every expiration since the previous read. Here each kevent wakeup
+ * writes its own count, so a slow reader gets several eight-byte values
+ * rather than one. The sum is the same, which is what the missed-wakeup
+ * accounting in threads.h needs.
+ */
+
+#ifndef SRSRAN_TIMERFD_COMPAT_H
+#define SRSRAN_TIMERFD_COMPAT_H
+
+#ifdef __APPLE__
+
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/event.h>
+#include <sys/time.h>
+#include <time.h>
+#include <unistd.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Darwin has no POSIX interval timers, so it does not declare itimerspec
+ * either. It is a pair of timespec, exactly as POSIX defines it. */
+#ifndef SRSRAN_HAVE_ITIMERSPEC
+#define SRSRAN_HAVE_ITIMERSPEC
+struct itimerspec {
+  struct timespec it_interval;
+  struct timespec it_value;
+};
+#endif
+
+#define TFD_CLOEXEC       O_CLOEXEC
+#define TFD_NONBLOCK      O_NONBLOCK
+#define TFD_TIMER_ABSTIME 1
+
+#define SRSRAN_TFD_MAX 64
+
+struct srsran_tfd_entry {
+  int               rd_fd;
+  int               wr_fd;
+  int               armed;
+  struct itimerspec spec;
+};
+
+struct srsran_tfd_state {
+  int                     kq;
+  pthread_t               thread;
+  pthread_mutex_t         lock;
+  int                     started;
+  struct srsran_tfd_entry slots[SRSRAN_TFD_MAX];
+};
+
+static inline struct srsran_tfd_state* srsran_tfd_get_state(void)
+{
+  static struct srsran_tfd_state st = {-1, 0, PTHREAD_MUTEX_INITIALIZER, 0, {{0, 0, 0, {{0, 0}, {0, 0}}}}};
+  return &st;
+}
+
+static inline void* srsran_tfd_thread(void* arg)
+{
+  struct srsran_tfd_state* st = (struct srsran_tfd_state*)arg;
+
+  for (;;) {
+    struct kevent ev;
+    int           n = kevent(st->kq, NULL, 0, &ev, 1, NULL);
+
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    if (n == 0) {
+      continue;
+    }
+
+    {
+      int      fd    = (int)ev.ident;
+      uint64_t count = ev.data > 0 ? (uint64_t)ev.data : 1;
+      int      wr    = -1;
+      int      i;
+
+      pthread_mutex_lock(&st->lock);
+      for (i = 0; i < SRSRAN_TFD_MAX; i++) {
+        if (st->slots[i].armed && st->slots[i].rd_fd == fd) {
+          wr = st->slots[i].wr_fd;
+          break;
+        }
+      }
+      pthread_mutex_unlock(&st->lock);
+
+      if (wr < 0) {
+        continue;
+      }
+
+      /* A closed read end means the caller is gone. Drop the timer rather
+       * than spinning on a broken pipe. */
+      if (write(wr, &count, sizeof(count)) < 0 && (errno == EPIPE || errno == EBADF)) {
+        struct kevent del;
+        EV_SET(&del, (uintptr_t)fd, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+        kevent(st->kq, &del, 1, NULL, 0, NULL);
+
+        pthread_mutex_lock(&st->lock);
+        if (i < SRSRAN_TFD_MAX) {
+          close(st->slots[i].wr_fd);
+          memset(&st->slots[i], 0, sizeof(st->slots[i]));
+        }
+        pthread_mutex_unlock(&st->lock);
+      }
+    }
+  }
+  return NULL;
+}
+
+/*
+ * The caller closes the descriptor with plain close(), which cannot tell us
+ * the timer is finished. Reclaim dead entries before allocating, otherwise a
+ * reused descriptor number matches a stale slot and the timer thread writes
+ * into a pipe nobody reads. Must run before pipe(), so that live entries
+ * cannot collide with the descriptors we are about to get.
+ */
+static inline void srsran_tfd_reap(struct srsran_tfd_state* st)
+{
+  int i;
+
+  for (i = 0; i < SRSRAN_TFD_MAX; i++) {
+    if (!st->slots[i].armed) {
+      continue;
+    }
+    if (fcntl(st->slots[i].rd_fd, F_GETFD) >= 0) {
+      continue; /* still open */
+    }
+    {
+      struct kevent del;
+      EV_SET(&del, (uintptr_t)st->slots[i].rd_fd, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+      kevent(st->kq, &del, 1, NULL, 0, NULL);
+    }
+    close(st->slots[i].wr_fd);
+    memset(&st->slots[i], 0, sizeof(st->slots[i]));
+  }
+}
+
+static inline int timerfd_create(int clockid, int flags)
+{
+  struct srsran_tfd_state* st = srsran_tfd_get_state();
+  int                      fds[2];
+  int                      i;
+
+  (void)clockid; /* kqueue timers are monotonic */
+
+  pthread_mutex_lock(&st->lock);
+  if (st->kq >= 0) {
+    srsran_tfd_reap(st);
+  }
+  pthread_mutex_unlock(&st->lock);
+
+  if (pipe(fds) != 0) {
+    return -1;
+  }
+
+  /* Writing from the timer thread must never raise SIGPIPE. */
+  {
+    int on = 1;
+    fcntl(fds[1], F_SETNOSIGPIPE, on);
+  }
+  if (flags & TFD_NONBLOCK) {
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+  }
+  if (flags & TFD_CLOEXEC) {
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+  }
+
+  pthread_mutex_lock(&st->lock);
+
+  if (st->kq < 0) {
+    st->kq = kqueue();
+    if (st->kq < 0) {
+      pthread_mutex_unlock(&st->lock);
+      close(fds[0]);
+      close(fds[1]);
+      return -1;
+    }
+  }
+  if (!st->started) {
+    if (pthread_create(&st->thread, NULL, srsran_tfd_thread, st) != 0) {
+      pthread_mutex_unlock(&st->lock);
+      close(fds[0]);
+      close(fds[1]);
+      return -1;
+    }
+    pthread_detach(st->thread);
+    st->started = 1;
+  }
+
+  for (i = 0; i < SRSRAN_TFD_MAX; i++) {
+    if (!st->slots[i].armed) {
+      st->slots[i].armed = 1;
+      st->slots[i].rd_fd = fds[0];
+      st->slots[i].wr_fd = fds[1];
+      memset(&st->slots[i].spec, 0, sizeof(st->slots[i].spec));
+      break;
+    }
+  }
+  pthread_mutex_unlock(&st->lock);
+
+  if (i == SRSRAN_TFD_MAX) {
+    close(fds[0]);
+    close(fds[1]);
+    errno = EMFILE;
+    return -1;
+  }
+
+  return fds[0];
+}
+
+static inline int timerfd_settime(int fd, int flags, const struct itimerspec* new_value,
+                                  struct itimerspec* old_value)
+{
+  struct srsran_tfd_state* st = srsran_tfd_get_state();
+  struct kevent            ev;
+  int64_t                  first_ns;
+  int64_t                  period_ns;
+  int                      i;
+  int                      found = 0;
+
+  if (new_value == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  pthread_mutex_lock(&st->lock);
+  for (i = 0; i < SRSRAN_TFD_MAX; i++) {
+    if (st->slots[i].armed && st->slots[i].rd_fd == fd) {
+      if (old_value != NULL) {
+        *old_value = st->slots[i].spec;
+      }
+      st->slots[i].spec = *new_value;
+      found             = 1;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&st->lock);
+
+  if (!found) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  first_ns  = (int64_t)new_value->it_value.tv_sec * 1000000000 + new_value->it_value.tv_nsec;
+  period_ns = (int64_t)new_value->it_interval.tv_sec * 1000000000 + new_value->it_interval.tv_nsec;
+
+  /* An it_value of zero disarms the timer, as on Linux. */
+  if (first_ns == 0) {
+    EV_SET(&ev, (uintptr_t)fd, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+    kevent(st->kq, &ev, 1, NULL, 0, NULL);
+    return 0;
+  }
+
+  {
+    uint32_t fflags = NOTE_NSECONDS;
+    uint16_t evflags = EV_ADD | EV_ENABLE;
+    int64_t  data    = first_ns;
+
+    if (flags & TFD_TIMER_ABSTIME) {
+      fflags |= NOTE_ABSOLUTE;
+      evflags |= EV_ONESHOT;
+    } else if (period_ns == 0) {
+      evflags |= EV_ONESHOT;
+    } else {
+      /* Periodic. kqueue repeats at the interval it is given, so arm it
+       * with the period. The first expiry differs from it_value only when
+       * the caller asked for a different initial delay, which srsRAN does
+       * not do. */
+      data = period_ns;
+    }
+
+    EV_SET(&ev, (uintptr_t)fd, EVFILT_TIMER, evflags, fflags, data, NULL);
+    if (kevent(st->kq, &ev, 1, NULL, 0, NULL) != 0) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+static inline int timerfd_gettime(int fd, struct itimerspec* curr_value)
+{
+  struct srsran_tfd_state* st = srsran_tfd_get_state();
+  int                      i;
+
+  if (curr_value == NULL) {
+    errno = EFAULT;
+    return -1;
+  }
+
+  pthread_mutex_lock(&st->lock);
+  for (i = 0; i < SRSRAN_TFD_MAX; i++) {
+    if (st->slots[i].armed && st->slots[i].rd_fd == fd) {
+      *curr_value = st->slots[i].spec;
+      pthread_mutex_unlock(&st->lock);
+      return 0;
+    }
+  }
+  pthread_mutex_unlock(&st->lock);
+
+  errno = EINVAL;
+  return -1;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __APPLE__ */
+
+#endif /* SRSRAN_TIMERFD_COMPAT_H */
