@@ -222,17 +222,20 @@ Seven of the 23 patches fix defects that are not specific to macOS. They are
 being submitted separately to `srsran/srsRAN_4G`, each argued on the platform it
 actually affects.
 
-| Patch | Fix | Who else it affects |
-|---|---|---|
-| [001](patches/001-arm64-not-arm32-flags.patch) | Detect 64-bit ARM by explicit processor names | Any platform reporting `arm64`. Linux `aarch64` silently loses `HAVE_NEONv8` from the same asymmetry |
-| [003](patches/003-bundled-fmt-include-priority.patch) | Give the bundled fmt include priority | Any system with fmt on an explicit include path |
-| [010](patches/010-template-keyword.patch) | Drop a `template` keyword with no argument list | Every conforming compiler. The construct is ill-formed; clang 21 merely enforces it |
-| [014](patches/014-mbedtls-include-priority.patch) | Give the selected mbedtls priority | Any system with a second mbedtls installed |
-| [016](patches/016-glibc-prereq-guard.patch) | Test for `__GLIBC_PREREQ` before calling it | musl, so Alpine and most embedded builds |
-| [017](patches/017-portable-ifreq-in6-members.patch) | Portable `ifreq` and `in6_addr` member spellings | No behaviour change on Linux; makes the code build on BSD |
-| [019](patches/019-cxx-standard-option.patch) | Make the C++ standard selectable | Anyone building against UHD 4.7 or later |
+| Patch | Fix | Who else it affects | PR |
+|---|---|---|---|
+| [001](patches/001-arm64-not-arm32-flags.patch) | Detect 64-bit ARM by explicit processor names | Any platform reporting `arm64`. Linux `aarch64` silently loses `HAVE_NEONv8` from the same asymmetry | [#1544](https://github.com/srsran/srsRAN_4G/pull/1544) |
+| [003](patches/003-bundled-fmt-include-priority.patch) | Give the bundled fmt include priority | Any system with fmt on an explicit include path | not yet opened |
+| [010](patches/010-template-keyword.patch) | Drop a `template` keyword with no argument list | Every conforming compiler. The construct is ill-formed; clang 21 merely enforces it | not yet opened |
+| [014](patches/014-mbedtls-include-priority.patch) | Give the selected mbedtls priority | Any system with a second mbedtls installed | not yet opened |
+| [016](patches/016-glibc-prereq-guard.patch) | Test for `__GLIBC_PREREQ` before calling it | musl, so Alpine and most embedded builds | not yet opened |
+| [017](patches/017-portable-ifreq-in6-members.patch) | Portable `ifreq` and `in6_addr` member spellings | No behaviour change on Linux; makes the code build on BSD | not yet opened |
+| [019](patches/019-cxx-standard-option.patch) | Make the C++ standard selectable | Anyone building against UHD 4.7 or later | not yet opened |
 
-Links to the pull requests will be added here as they open.
+The first is open. The remaining six are prepared and held deliberately:
+patch 001 is the strongest argument and the smallest diff, so it goes alone as
+a test of whether the maintainers want this class of change at all. The others
+follow once there is an answer.
 
 ## Repository layout
 
