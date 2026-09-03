@@ -1,0 +1,238 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 022/NNN] srsepc: S11 over a filesystem socket where there is no abstract namespace
+
+The S11 interface between the MME and the SPGW uses a UNIX datagram socket
+named "@mme_s11" and "@spgw_s11", with the first byte of sun_path
+overwritten by NUL. That is the Linux abstract namespace: the name lives
+outside the filesystem, nothing collides and nothing needs cleaning up.
+
+Darwin has no abstract namespace. A sun_path beginning with NUL is an empty
+path, so bind fails and the EPC stops before the SPGW starts:
+
+  [MME GTPC] [E] Error binding UNIX socket. Error No such file or directory
+  [MME GTPC] [E] Error Initializing MME S11 Interface
+
+Move the addressing into a helper that keeps the abstract form on Linux and
+falls back to a real file elsewhere. Two details come with the fallback. The
+path has to be removed before binding, because a socket file left by an
+earlier run is otherwise rejected as already in use. And the address length
+is no longer the whole struct: a filesystem address covers only the bytes
+the path occupies, so the length is carried alongside the address and used
+for bind and sendto.
+
+--- /dev/null
++++ b/lib/include/srsran/common/unix_socket_compat.h
+@@ -0,0 +1,      77 @@
++/**
++ * UNIX socket addressing, with a filesystem fallback for systems that have no
++ * abstract namespace.
++ *
++ * Copyright 2013-2023 Software Radio Systems Limited
++ * Darwin compatibility layer added 2026 by Andrei Gosman.
++ *
++ * This file is part of srsRAN. Same licence as the rest of the tree.
++ *
++ * Linux lets a UNIX socket live in an abstract namespace: sun_path starts with
++ * a NUL byte, the rest of it names the socket, and nothing appears in the
++ * filesystem, so there is no file to collide with and nothing to clean up.
++ *
++ * Darwin has no such namespace. A sun_path that starts with NUL is an empty
++ * path and bind fails with ENOENT. The addresses here fall back to real files
++ * under a runtime directory, which means the path has to be removed before
++ * binding: a socket file left behind by a previous run would otherwise be
++ * rejected as already in use.
++ */
++
++#ifndef SRSRAN_UNIX_SOCKET_COMPAT_H
++#define SRSRAN_UNIX_SOCKET_COMPAT_H
++
++#include <stdio.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#ifndef SRSRAN_UNIX_SOCKET_DIR
++#define SRSRAN_UNIX_SOCKET_DIR "/tmp"
++#endif
++
++/*
++ * Fills addr for the socket called name, where name carries no prefix and no
++ * path, for example "mme_s11". Returns the length to hand to bind, connect or
++ * sendto.
++ */
++static inline socklen_t srsran_unix_addr(struct sockaddr_un* addr, const char* name)
++{
++  memset(addr, 0, sizeof(*addr));
++  addr->sun_family = AF_UNIX;
++
++#ifdef __linux__
++  snprintf(addr->sun_path, sizeof(addr->sun_path), "@%s", name);
++  addr->sun_path[0] = '\0';
++  return (socklen_t)sizeof(*addr);
++#else
++  snprintf(addr->sun_path, sizeof(addr->sun_path), "%s/srsran_%s", SRSRAN_UNIX_SOCKET_DIR, name);
++  return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(addr->sun_path) + 1);
++#endif
++}
++
++/*
++ * Removes a stale socket file before binding. A no-op where the address lives
++ * in the abstract namespace, since there is no file.
++ */
++static inline void srsran_unix_addr_cleanup(const struct sockaddr_un* addr)
++{
++#ifdef __linux__
++  (void)addr;
++#else
++  if (addr->sun_path[0] != '\0') {
++    unlink(addr->sun_path);
++  }
++#endif
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SRSRAN_UNIX_SOCKET_COMPAT_H */
+--- a/srsepc/hdr/mme/mme_gtpc.h	2026-09-03 17:50:20
++++ b/srsepc/hdr/mme/mme_gtpc.h	2026-09-03 17:50:20
+@@ -72,6 +72,9 @@
+ 
+   int                m_s11;
+   struct sockaddr_un m_mme_addr, m_spgw_addr;
++  // Address length differs by platform: the abstract namespace uses the whole
++  // struct, a filesystem path only the bytes it occupies.
++  socklen_t          m_spgw_addr_len = 0;
+ 
+   bool     init_s11();
+   uint32_t get_new_ctrl_teid();
+--- a/srsepc/hdr/spgw/gtpc.h	2026-09-03 17:50:20
++++ b/srsepc/hdr/spgw/gtpc.h	2026-09-03 17:50:20
+@@ -79,6 +79,9 @@
+ 
+   int                m_s11;
+   struct sockaddr_un m_spgw_addr, m_mme_addr;
++  // Address length differs by platform: the abstract namespace uses the whole
++  // struct, a filesystem path only the bytes it occupies.
++  socklen_t          m_mme_addr_len = 0;
+ 
+   uint32_t m_h_next_ue_ip;
+   uint64_t m_next_ctrl_teid;
+--- a/srsepc/src/mme/mme_gtpc.cc	2026-09-03 17:50:08
++++ b/srsepc/src/mme/mme_gtpc.cc	2026-09-03 17:50:35
+@@ -23,6 +23,7 @@
+ #include "srsepc/hdr/mme/s1ap.h"
+ #include "srsepc/hdr/spgw/spgw.h"
+ #include "srsran/asn1/gtpc.h"
++#include "srsran/common/unix_socket_compat.h"
+ #include <inttypes.h> // for printing uint64_t
+ 
+ namespace srsepc {
+@@ -52,9 +53,7 @@
+ bool mme_gtpc::init_s11()
+ {
+ 
+-  socklen_t sock_len;
+-  char      mme_addr_name[]  = "@mme_s11";
+-  char      spgw_addr_name[] = "@spgw_s11";
++  socklen_t mme_addr_len;
+ 
+   // Logs
+   m_logger.info("Initializing MME S11 interface.");
+@@ -67,22 +66,17 @@
+   }
+ 
+   // Set MME Address
+-  memset(&m_mme_addr, 0, sizeof(struct sockaddr_un));
+-  m_mme_addr.sun_family = AF_UNIX;
+-  snprintf(m_mme_addr.sun_path, sizeof(m_mme_addr.sun_path), "%s", mme_addr_name);
+-  m_mme_addr.sun_path[0] = '\0';
++  mme_addr_len = srsran_unix_addr(&m_mme_addr, "mme_s11");
++  srsran_unix_addr_cleanup(&m_mme_addr);
+ 
+   // Bind socket to address
+-  if (bind(m_s11, (const struct sockaddr*)&m_mme_addr, sizeof(m_mme_addr)) == -1) {
++  if (bind(m_s11, (const struct sockaddr*)&m_mme_addr, mme_addr_len) == -1) {
+     m_logger.error("Error binding UNIX socket. Error %s", strerror(errno));
+     return false;
+   }
+ 
+   // Set SPGW Address for later use
+-  memset(&m_spgw_addr, 0, sizeof(struct sockaddr_un));
+-  m_spgw_addr.sun_family = AF_UNIX;
+-  snprintf(m_spgw_addr.sun_path, sizeof(m_spgw_addr.sun_path), "%s", spgw_addr_name);
+-  m_spgw_addr.sun_path[0] = '\0';
++  m_spgw_addr_len = srsran_unix_addr(&m_spgw_addr, "spgw_s11");
+ 
+   m_logger.info("MME S11 Initialized");
+   srsran::console("MME S11 Initialized\n");
+@@ -96,7 +90,7 @@
+ 
+   // TODO Add GTP-C serialization code
+   // Send S11 message to SPGW
+-  n = sendto(m_s11, &pdu, sizeof(pdu), 0, (const sockaddr*)&m_spgw_addr, sizeof(m_spgw_addr));
++  n = sendto(m_s11, &pdu, sizeof(pdu), 0, (const sockaddr*)&m_spgw_addr, m_spgw_addr_len);
+   if (n < 0) {
+     m_logger.error("Error sending to socket. Error %s", strerror(errno));
+     srsran::console("Error sending to socket. Error %s\n", strerror(errno));
+--- a/srsepc/src/spgw/gtpc.cc	2026-09-03 17:50:08
++++ b/srsepc/src/spgw/gtpc.cc	2026-09-03 17:50:35
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "srsepc/hdr/spgw/gtpc.h"
++#include "srsran/common/unix_socket_compat.h"
+ #include <algorithm>
+ #include <arpa/inet.h>
+ #include <cstring>
+@@ -98,9 +99,7 @@
+ 
+ int spgw::gtpc::init_s11(spgw_args_t* args)
+ {
+-  socklen_t sock_len;
+-  char      spgw_addr_name[] = "@spgw_s11";
+-  char      mme_addr_name[]  = "@mme_s11";
++  socklen_t spgw_addr_len;
+ 
+   // Logs
+   m_logger.info("Initializing SPGW S11 interface.");
+@@ -113,19 +112,14 @@
+   }
+ 
+   // Set MME Address
+-  memset(&m_mme_addr, 0, sizeof(struct sockaddr_un));
+-  m_mme_addr.sun_family = AF_UNIX;
+-  snprintf(m_mme_addr.sun_path, sizeof(m_mme_addr.sun_path), "%s", mme_addr_name);
+-  m_mme_addr.sun_path[0] = '\0';
++  m_mme_addr_len = srsran_unix_addr(&m_mme_addr, "mme_s11");
+ 
+   // Set SPGW Address
+-  memset(&m_spgw_addr, 0, sizeof(struct sockaddr_un));
+-  m_spgw_addr.sun_family = AF_UNIX;
+-  snprintf(m_spgw_addr.sun_path, sizeof(m_spgw_addr.sun_path), "%s", spgw_addr_name);
+-  m_spgw_addr.sun_path[0] = '\0';
++  spgw_addr_len = srsran_unix_addr(&m_spgw_addr, "spgw_s11");
++  srsran_unix_addr_cleanup(&m_spgw_addr);
+ 
+   // Bind socket to address
+-  if (bind(m_s11, (const struct sockaddr*)&m_spgw_addr, sizeof(m_spgw_addr)) == -1) {
++  if (bind(m_s11, (const struct sockaddr*)&m_spgw_addr, spgw_addr_len) == -1) {
+     m_logger.error("Error binding UNIX socket. Error %s", strerror(errno));
+     return SRSRAN_ERROR_CANT_START;
+   }
+@@ -138,7 +132,7 @@
+ 
+   // TODO add serialization code here
+   // Send S11 message to MME
+-  int n = sendto(m_s11, &pdu, sizeof(pdu), 0, (const sockaddr*)&m_mme_addr, sizeof(m_mme_addr));
++  int n = sendto(m_s11, &pdu, sizeof(pdu), 0, (const sockaddr*)&m_mme_addr, m_mme_addr_len);
+   if (n < 0) {
+     m_logger.error("Error sending to socket. Error %s", strerror(errno));
+     return false;

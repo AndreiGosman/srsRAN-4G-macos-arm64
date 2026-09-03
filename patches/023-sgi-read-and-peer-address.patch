@@ -1,0 +1,73 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 023/NNN] srsepc: read the SGi interface through the tun helper
+
+The SPGW read loop takes the SGi descriptor straight from get_sgi() and
+calls read() on it. Every other access to a TUN descriptor in the tree goes
+through srsran_tun_read, which strips the four byte address family prefix
+that utun puts in front of each packet on Darwin. This one did not, so the
+prefix stayed in the buffer and the version nibble was read out of it:
+
+  [GTPU  ] [I] IPv6 not supported yet.
+
+for every uplink packet, while the uplink itself was working. It escaped
+the earlier conversion because the descriptor arrives in a local variable
+named sgi rather than the member m_sgi that the other call sites use.
+
+Also clears the point-to-point peer address of the SGi interface. SIOCSIFADDR
+sets only the local end on BSD, so the peer kept whatever was in the struct
+and ifconfig reported a random address, which could have installed a route to
+somebody else's network. There is no peer to name on the SGi side, so it is
+set to zero explicitly.
+
+With this the loopback is complete: five pings from the UE address to the SGi
+address, no loss, 23 to 42 ms, and the UE's gateway logs a TX PDU and an RX
+PDU for each one.
+
+--- a/srsepc/src/spgw/spgw.cc	2026-09-03 18:43:41
++++ b/srsepc/src/spgw/spgw.cc	2026-09-03 18:43:41
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "srsepc/hdr/spgw/spgw.h"
++#include "srsran/common/tun_compat.h"
+ #include "srsepc/hdr/mme/mme_gtpc.h"
+ #include "srsepc/hdr/spgw/gtpc.h"
+ #include "srsepc/hdr/spgw/gtpu.h"
+@@ -144,7 +145,7 @@
+          */
+         m_logger.debug("Message received at SPGW: SGi Message");
+         sgi_msg          = srsran::make_byte_buffer("spgw::run_thread::sgi_msg");
+-        sgi_msg->N_bytes = read(sgi, sgi_msg->msg, buf_len);
++        sgi_msg->N_bytes = srsran_tun_read(sgi, sgi_msg->msg, buf_len);
+         m_gtpu->handle_sgi_pdu(std::move(sgi_msg));
+       }
+       if (FD_ISSET(s1u, &set)) {
+--- a/srsepc/src/spgw/gtpu.cc	2026-09-03 18:38:20
++++ b/srsepc/src/spgw/gtpu.cc	2026-09-03 18:38:20
+@@ -161,6 +161,25 @@
+     return SRSRAN_ERROR_CANT_START;
+   }
+ 
++#ifndef __linux__
++  // A utun is a point-to-point interface and SIOCSIFADDR sets only the local
++  // end. Without this the destination address keeps whatever happened to be in
++  // the struct, which shows up in ifconfig as a random peer and can install a
++  // route to an address nobody asked for. There is no peer to name on the SGi
++  // side, so state that explicitly.
++  {
++    struct ifreq dst_ifr;
++    memset(&dst_ifr, 0, sizeof(dst_ifr));
++    strncpy(dst_ifr.ifr_name, if_name, IFNAMSIZ - 1);
++    dst_ifr.ifr_addr.sa_family = AF_INET;
++    ((struct sockaddr_in*)&dst_ifr.ifr_addr)->sin_len         = sizeof(struct sockaddr_in);
++    ((struct sockaddr_in*)&dst_ifr.ifr_addr)->sin_addr.s_addr = INADDR_ANY;
++    if (ioctl(sgi_sock, SIOCSIFDSTADDR, &dst_ifr) < 0) {
++      m_logger.warning("Could not clear the SGi peer address: %s", strerror(errno));
++    }
++  }
++#endif
++
+   ifr.ifr_addr.sa_family = AF_INET;
+   if (inet_pton(ifr.ifr_addr.sa_family , "255.255.255.0", &((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr) != 1) {
+     perror("inet_pton");

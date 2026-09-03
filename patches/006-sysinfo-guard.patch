@@ -1,0 +1,31 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 006/NNN] system: guard the Linux-only metrics include
+
+No field of struct sysinfo is read anywhere in this file, so the include is
+only a build dependency and Darwin has no sys/sysinfo.h.
+
+Guarding it does not make the file useful on Darwin. Every measurement here
+comes from procfs: /proc/self/stat, /proc/stat, /proc/meminfo and
+/proc/self/status. Each reader opens the file with an ifstream and returns a
+zeroed metric when the open fails, so on Darwin the metrics report zero
+rather than wrong numbers. Real values would need sysctl and
+host_statistics64, which is a separate piece of work.
+
+--- a/lib/src/system/sys_metrics_processor.cc	2026-09-03 15:13:08
++++ b/lib/src/system/sys_metrics_processor.cc	2026-09-03 15:13:54
+@@ -22,7 +22,14 @@
+ #include "srsran/system/sys_metrics_processor.h"
+ #include <fstream>
+ #include <sstream>
++/* No field of struct sysinfo is read anywhere in this file, so the include
++ * is only a build dependency. The measurements themselves come from procfs,
++ * which Darwin does not have; every reader below opens a file under /proc and
++ * returns a zeroed metric when the open fails. Process and system metrics are
++ * therefore reported as zero on Darwin rather than being wrong. */
++#ifdef __linux__
+ #include <sys/sysinfo.h>
++#endif
+ #include <unistd.h>
+ 
+ using namespace srsran;

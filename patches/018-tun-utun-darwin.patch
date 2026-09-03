@@ -1,0 +1,522 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 018/NNN] common: TUN through utun on Darwin
+
+Linux opens /dev/net/tun and names the device with TUNSETIFF. Darwin has
+neither. Its equivalent is utun, a PF_SYSTEM control socket, and it differs
+in two ways the callers have to know about.
+
+The kernel picks the interface name. A utun is always utunN for the first
+free N, so a configured device name cannot be honoured. srsran_tun_open
+reports the name actually in use and each caller logs the substitution
+rather than letting it surprise whoever reads the configuration next to
+ifconfig output.
+
+Every packet carries a four byte address family prefix and there is no
+equivalent of IFF_NO_PI to switch it off. srsran_tun_read and
+srsran_tun_write add and strip it with readv and writev, so no copy is
+added and the call sites keep handling bare IP packets.
+
+Two paths are refused rather than approximated. Network namespaces have no
+counterpart, so a configured netns is an error instead of being ignored.
+Assigning an IPv6 address goes through SIOCAIFADDR_IN6 and in6_aliasreq
+here, not the interface index and in6_ifreq the Linux path uses, so IPv6
+bearers report that they are unsupported instead of claiming an address the
+interface does not have.
+
+The netlink helpers that remove the autoconfigured link-local address are
+compiled out. A freshly created utun comes up with the flags
+UP,POINTOPOINT,RUNNING,MULTICAST and no address of any family, so there is
+nothing to find and nothing to delete.
+
+Verified with an isolated test: five packets round trip through the framing
+in both families, and the four byte prefix carries AF_INET and AF_INET6 as
+expected.
+
+--- /dev/null
++++ b/lib/include/srsran/common/tun_compat.h
+@@ -0,0 +1,     188 @@
++/**
++ * TUN device access, with a Darwin utun backend.
++ *
++ * Copyright 2013-2023 Software Radio Systems Limited
++ * Darwin compatibility layer added 2026 by Andrei Gosman.
++ *
++ * This file is part of srsRAN. Same licence as the rest of the tree.
++ *
++ * Linux opens /dev/net/tun and names the device with TUNSETIFF. Darwin has
++ * neither. Its equivalent, utun, is a PF_SYSTEM control socket, and it differs
++ * in two ways that callers have to know about.
++ *
++ * The kernel picks the interface name. A utun is always utunN for the first
++ * free N, so a configured device name cannot be honoured. srsran_tun_open
++ * reports the name actually in use and leaves it to the caller to say so.
++ *
++ * Every packet carries a four byte address family prefix, in network order.
++ * There is no equivalent of IFF_NO_PI to turn it off. srsran_tun_read and
++ * srsran_tun_write add and remove it with readv and writev, so no copy is
++ * needed and callers see bare IP packets exactly as they do on Linux.
++ */
++
++#ifndef SRSRAN_TUN_COMPAT_H
++#define SRSRAN_TUN_COMPAT_H
++
++#include <errno.h>
++#include <string.h>
++#include <sys/uio.h>
++#include <unistd.h>
++
++#ifdef __APPLE__
++
++#include <arpa/inet.h>
++#include <net/if_utun.h>
++#include <netinet/in.h>
++#include <sys/ioctl.h>
++#include <sys/kern_control.h>
++#include <sys/socket.h>
++#include <sys/sys_domain.h>
++
++#else
++
++#include <fcntl.h>
++#include <linux/if.h>
++#include <linux/if_tun.h>
++#include <sys/ioctl.h>
++
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * Opens a TUN device. On success returns the descriptor and writes the name
++ * of the interface in use into actual_name. On Linux that is requested_name;
++ * on Darwin it is whatever the kernel assigned, which the caller should
++ * compare against what it asked for. Returns -1 with errno set on failure.
++ */
++static inline int srsran_tun_open(const char* requested_name, char* actual_name, size_t actual_len)
++{
++#ifdef __APPLE__
++  struct ctl_info     ci;
++  struct sockaddr_ctl sc;
++  socklen_t           nlen = (socklen_t)actual_len;
++  int                 fd;
++
++  (void)requested_name;
++
++  fd = socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
++  if (fd < 0) {
++    return -1;
++  }
++
++  memset(&ci, 0, sizeof(ci));
++  strncpy(ci.ctl_name, UTUN_CONTROL_NAME, sizeof(ci.ctl_name) - 1);
++  if (ioctl(fd, CTLIOCGINFO, &ci) < 0) {
++    int saved = errno;
++    close(fd);
++    errno = saved;
++    return -1;
++  }
++
++  memset(&sc, 0, sizeof(sc));
++  sc.sc_len       = sizeof(sc);
++  sc.sc_family    = AF_SYSTEM;
++  sc.ss_sysaddr   = AF_SYS_CONTROL;
++  sc.sc_id        = ci.ctl_id;
++  sc.sc_unit      = 0; /* zero asks the kernel for the first free unit */
++
++  if (connect(fd, (struct sockaddr*)&sc, sizeof(sc)) < 0) {
++    int saved = errno;
++    close(fd);
++    errno = saved;
++    return -1;
++  }
++
++  if (getsockopt(fd, SYSPROTO_CONTROL, UTUN_OPT_IFNAME, actual_name, &nlen) < 0) {
++    int saved = errno;
++    close(fd);
++    errno = saved;
++    return -1;
++  }
++
++  return fd;
++#else
++  struct ifreq ifr;
++  int          fd = open("/dev/net/tun", O_RDWR);
++  if (fd < 0) {
++    return -1;
++  }
++
++  memset(&ifr, 0, sizeof(ifr));
++  ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
++  strncpy(ifr.ifr_name, requested_name, IFNAMSIZ - 1);
++  ifr.ifr_name[IFNAMSIZ - 1] = '\0';
++
++  if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
++    int saved = errno;
++    close(fd);
++    errno = saved;
++    return -1;
++  }
++
++  strncpy(actual_name, ifr.ifr_name, actual_len - 1);
++  actual_name[actual_len - 1] = '\0';
++  return fd;
++#endif
++}
++
++/* Reads one packet. The returned length counts the IP packet only. */
++static inline ssize_t srsran_tun_read(int fd, void* buf, size_t len)
++{
++#ifdef __APPLE__
++  uint32_t     family;
++  struct iovec iov[2];
++  ssize_t      n;
++
++  iov[0].iov_base = &family;
++  iov[0].iov_len  = sizeof(family);
++  iov[1].iov_base = buf;
++  iov[1].iov_len  = len;
++
++  n = readv(fd, iov, 2);
++  if (n < (ssize_t)sizeof(family)) {
++    return n < 0 ? n : 0;
++  }
++  return n - (ssize_t)sizeof(family);
++#else
++  return read(fd, buf, len);
++#endif
++}
++
++/* Writes one packet. len counts the IP packet only. */
++static inline ssize_t srsran_tun_write(int fd, const void* buf, size_t len)
++{
++#ifdef __APPLE__
++  uint32_t     family;
++  struct iovec iov[2];
++  ssize_t      n;
++
++  if (len == 0) {
++    return 0;
++  }
++
++  /* The version nibble tells the two apart, which is all utun needs. */
++  family = (((const unsigned char*)buf)[0] >> 4) == 6 ? htonl(AF_INET6) : htonl(AF_INET);
++
++  iov[0].iov_base = &family;
++  iov[0].iov_len  = sizeof(family);
++  iov[1].iov_base = (void*)(uintptr_t)buf;
++  iov[1].iov_len  = len;
++
++  n = writev(fd, iov, 2);
++  if (n < (ssize_t)sizeof(family)) {
++    return n < 0 ? n : 0;
++  }
++  return n - (ssize_t)sizeof(family);
++#else
++  return write(fd, buf, len);
++#endif
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SRSRAN_TUN_COMPAT_H */
+--- a/srsue/src/stack/upper/gw.cc	2026-09-03 15:48:51
++++ b/srsue/src/stack/upper/gw.cc	2026-09-03 15:50:14
+@@ -27,10 +27,13 @@
+ #include <arpa/inet.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include "srsran/common/tun_compat.h"
+ #include <linux/if_tun.h>
+ #include <linux/ip.h>
++#ifdef __linux__
+ #include <linux/netlink.h>
+ #include <linux/rtnetlink.h>
++#endif
+ #include <netinet/in.h>
+ #include <sys/ioctl.h>
+ #include <sys/socket.h>
+@@ -151,7 +154,7 @@
+     // Only handle IPv4 and IPv6 packets
+     struct iphdr* ip_pkt = (struct iphdr*)pdu->msg;
+     if (ip_pkt->version == 4 || ip_pkt->version == 6) {
+-      int n = write(tun_fd, pdu->msg, pdu->N_bytes);
++      int n = srsran_tun_write(tun_fd, pdu->msg, pdu->N_bytes);
+       if (n > 0 && (pdu->N_bytes != (uint32_t)n)) {
+         logger.warning("DL TUN/TAP write failure. Wanted to write %d B but only wrote %d B.", pdu->N_bytes, n);
+       }
+@@ -185,7 +188,7 @@
+         logger.warning("TUN/TAP not up - dropping gw RX message");
+       }
+     } else {
+-      int n = write(tun_fd, pdu->msg, pdu->N_bytes);
++      int n = srsran_tun_write(tun_fd, pdu->msg, pdu->N_bytes);
+       if (n > 0 && (pdu->N_bytes != (uint32_t)n)) {
+         logger.warning("DL TUN/TAP write failure");
+       }
+@@ -292,7 +295,7 @@
+   while (run_enable) {
+     // Read packet from TUN
+     if (SRSRAN_MAX_BUFFER_SIZE_BYTES - SRSRAN_BUFFER_HEADER_OFFSET > idx) {
+-      N_bytes = read(tun_fd, &pdu->msg[idx], SRSRAN_MAX_BUFFER_SIZE_BYTES - SRSRAN_BUFFER_HEADER_OFFSET - idx);
++      N_bytes = srsran_tun_read(tun_fd, &pdu->msg[idx], SRSRAN_MAX_BUFFER_SIZE_BYTES - SRSRAN_BUFFER_HEADER_OFFSET - idx);
+     } else {
+       logger.error("GW pdu buffer full - gw receive thread exiting.");
+       srsran::console("GW pdu buffer full - gw receive thread exiting.\n");
+@@ -402,6 +405,7 @@
+     return SRSRAN_ERROR_ALREADY_STARTED;
+   }
+ 
++#ifdef __linux__
+   // change into netns
+   if (!args.netns.empty()) {
+     std::string netns("/run/netns/");
+@@ -419,8 +423,16 @@
+     }
+   }
+ 
++#else
++  if (!args.netns.empty()) {
++    logger.error("Network namespaces are a Linux feature; netns '%s' cannot be entered", args.netns.c_str());
++    return SRSRAN_ERROR_CANT_START;
++  }
++#endif
++
+   // Construct the TUN device
+-  tun_fd = open("/dev/net/tun", O_RDWR);
++  char if_name[IFNAMSIZ] = {};
++  tun_fd                 = srsran_tun_open(args.tun_dev_name.c_str(), if_name, sizeof(if_name));
+   logger.info("TUN file descriptor = %d", tun_fd);
+   if (0 > tun_fd) {
+     err_str = strerror(errno);
+@@ -428,17 +440,22 @@
+     return SRSRAN_ERROR_CANT_START;
+   }
+ 
++  // utun interfaces are named by the kernel, so a configured name cannot be
++  // honoured. Say so rather than letting the mismatch surprise someone reading
++  // the configuration next to ifconfig output.
++  if (args.tun_dev_name != if_name) {
++    logger.warning("Requested TUN device name '%s' but the kernel assigned '%s'; using '%s'",
++                   args.tun_dev_name.c_str(),
++                   if_name,
++                   if_name);
++    srsran::console("Requested TUN device name '%s' but the kernel assigned '%s'\n",
++                    args.tun_dev_name.c_str(),
++                    if_name);
++  }
++
+   memset(&ifr, 0, sizeof(ifr));
+-  ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+-  strncpy(
+-      ifr.ifr_name, args.tun_dev_name.c_str(), std::min(args.tun_dev_name.length(), (size_t)(IFNAMSIZ - 1)));
++  strncpy(ifr.ifr_name, if_name, IFNAMSIZ - 1);
+   ifr.ifr_name[IFNAMSIZ - 1] = 0;
+-  if (0 > ioctl(tun_fd, TUNSETIFF, &ifr)) {
+-    err_str = strerror(errno);
+-    logger.error("Failed to set TUN device name: %s", err_str);
+-    close(tun_fd);
+-    return SRSRAN_ERROR_CANT_START;
+-  }
+ 
+   // Bring up the interface
+   sock = socket(AF_INET, SOCK_DGRAM, 0);
+@@ -456,6 +473,7 @@
+     return SRSRAN_ERROR_CANT_START;
+   }
+ 
++#ifdef __linux__
+   // Delete link-local IPv6 address.
+   struct in6_addr in6p;
+   char            addr_str[INET6_ADDRSTRLEN];
+@@ -465,6 +483,7 @@
+   } else {
+     logger.warning("Could not find link-local IPv6 address.");
+   }
++#endif
+   if_up = true;
+ 
+   return SRSRAN_SUCCESS;
+@@ -493,10 +512,10 @@
+       close(tun_fd);
+       return SRSRAN_ERROR_CANT_START;
+     }
+-    ifr.ifr_netmask.sa_family = AF_INET;
+-    if (inet_pton(ifr.ifr_netmask.sa_family,
++    ifr.ifr_addr.sa_family = AF_INET;
++    if (inet_pton(ifr.ifr_addr.sa_family,
+                   args.tun_dev_netmask.c_str(),
+-                  &((struct sockaddr_in*)&ifr.ifr_netmask)->sin_addr.s_addr) != 1) {
++                  &((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr) != 1) {
+       logger.error("Invalid tun_dev_netmask: %s", args.tun_dev_netmask.c_str());
+       srsran::console("Invalid tun_dev_netmask: %s\n", args.tun_dev_netmask.c_str());
+       perror("inet_pton");
+@@ -537,6 +556,7 @@
+     if (sock > 0) {
+       close(sock);
+     }
++#ifdef __linux__
+     // Setup the IP address
+     sock                   = socket(AF_INET6, SOCK_DGRAM, 0);
+     ifr.ifr_addr.sa_family = AF_INET6;
+@@ -560,6 +580,17 @@
+       logger.error("Could not set IPv6 Link local address. Error %s", err_str);
+       return SRSRAN_ERROR_CANT_START;
+     }
++#else
++    // Assigning an IPv6 address to an interface goes through SIOCAIFADDR_IN6
++    // and struct in6_aliasreq on this system, not the interface index and
++    // struct in6_ifreq used above. That is not implemented, so refuse rather
++    // than report an address the interface does not have.
++    (void)sai;
++    (void)ifr6;
++    logger.error("IPv6 bearers are not supported on this platform");
++    srsran::console("IPv6 bearers are not supported on this platform\n");
++    return SRSRAN_ERROR_CANT_START;
++#endif
+ 
+     for (int i = 0; i < 8; i++) {
+       current_if_id[i] = ipv6_if_id[i];
+@@ -569,6 +600,7 @@
+   return SRSRAN_SUCCESS;
+ }
+ 
++#ifdef __linux__
+ bool gw::find_ipv6_addr(struct in6_addr* in6_out)
+ {
+   int               n, rtattrlen, fd = -1;
+@@ -728,4 +760,19 @@
+     close(fd);
+   }
+ }
++#else
++bool gw::find_ipv6_addr(struct in6_addr* in6_out)
++{
++  // Netlink is a Linux interface. Nothing autoconfigures a link-local address
++  // on a freshly created utun, so there is none to find.
++  (void)in6_out;
++  return false;
++}
++
++void gw::del_ipv6_addr(struct in6_addr* in6p)
++{
++  (void)in6p;
++}
++#endif
++
+ } // namespace srsue
+--- a/srsepc/src/spgw/gtpu.cc	2026-09-03 15:48:51
++++ b/srsepc/src/spgw/gtpu.cc	2026-09-03 15:49:11
+@@ -29,6 +29,7 @@
+ #include <fcntl.h>
+ #include <inttypes.h> // for printing uint64_t
+ #include <linux/if.h>
++#include "srsran/common/tun_compat.h"
+ #include <linux/if_tun.h>
+ #include <linux/ip.h>
+ #include <netinet/in.h>
+@@ -103,25 +104,30 @@
+   }
+ 
+   // Construct the TUN device
+-  m_sgi = open("/dev/net/tun", O_RDWR);
++  char if_name[IFNAMSIZ] = {};
++  m_sgi = srsran_tun_open(args->sgi_if_name.c_str(), if_name, sizeof(if_name));
+   m_logger.info("TUN file descriptor = %d", m_sgi);
+   if (m_sgi < 0) {
+     m_logger.error("Failed to open TUN device: %s", strerror(errno));
+     return SRSRAN_ERROR_CANT_START;
++  }
++
++  // utun interfaces are named by the kernel, so a configured name cannot be
++  // honoured. Report the substitution instead of failing quietly.
++  if (args->sgi_if_name != if_name) {
++    m_logger.warning("Requested SGi device name '%s' but the kernel assigned '%s'; using '%s'",
++                     args->sgi_if_name.c_str(),
++                     if_name,
++                     if_name);
++    srsran::console("Requested SGi device name '%s' but the kernel assigned '%s'\n",
++                    args->sgi_if_name.c_str(),
++                    if_name);
+   }
+ 
+   memset(&ifr, 0, sizeof(ifr));
+-  ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+-  strncpy(
+-      ifr.ifr_name, args->sgi_if_name.c_str(), std::min(args->sgi_if_name.length(), (size_t)(IFNAMSIZ - 1)));
++  strncpy(ifr.ifr_name, if_name, IFNAMSIZ - 1);
+   ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+ 
+-  if (ioctl(m_sgi, TUNSETIFF, &ifr) < 0) {
+-    m_logger.error("Failed to set TUN device name: %s", strerror(errno));
+-    close(m_sgi);
+-    return SRSRAN_ERROR_CANT_START;
+-  }
+-
+   // Bring up the interface
+   sgi_sock = socket(AF_INET, SOCK_DGRAM, 0);
+   if (ioctl(sgi_sock, SIOCGIFFLAGS, &ifr) < 0) {
+@@ -268,7 +274,7 @@
+ 
+   m_logger.debug("Received PDU from S1-U. Bytes=%d", msg->N_bytes);
+   m_logger.debug("TEID 0x%x. Bytes=%d", header.teid, msg->N_bytes);
+-  int n = write(m_sgi, msg->msg, msg->N_bytes);
++  int n = srsran_tun_write(m_sgi, msg->msg, msg->N_bytes);
+   if (n < 0) {
+     m_logger.error("Could not write to TUN interface.");
+   } else {
+--- a/srsepc/src/mbms-gw/mbms-gw.cc	2026-09-03 15:48:51
++++ b/srsepc/src/mbms-gw/mbms-gw.cc	2026-09-03 15:49:11
+@@ -27,6 +27,7 @@
+ #include <fcntl.h>
+ #include <iostream>
+ #include <linux/if.h>
++#include "srsran/common/tun_compat.h"
+ #include <linux/if_tun.h>
+ #include <linux/ip.h>
+ #include <netinet/in.h>
+@@ -115,7 +116,8 @@
+   }
+ 
+   // Construct the TUN device
+-  m_sgi_mb_if = open("/dev/net/tun", O_RDWR);
++  char if_name[IFNAMSIZ] = {};
++  m_sgi_mb_if = srsran_tun_open(args->sgi_mb_if_name.c_str(), if_name, sizeof(if_name));
+   m_logger.info("TUN file descriptor = %d", m_sgi_mb_if);
+   if (m_sgi_mb_if < 0) {
+     m_logger.error("Failed to open TUN device: %s", strerror(errno));
+@@ -123,20 +125,9 @@
+   }
+ 
+   memset(&ifr, 0, sizeof(ifr));
+-  ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+-  strncpy(ifr.ifr_name,
+-          args->sgi_mb_if_name.c_str(),
+-          std::min(args->sgi_mb_if_name.length(), (size_t)IFNAMSIZ - 1));
++  strncpy(ifr.ifr_name, if_name, IFNAMSIZ - 1);
+   ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+ 
+-  if (ioctl(m_sgi_mb_if, TUNSETIFF, &ifr) < 0) {
+-    m_logger.error("Failed to set TUN device name: %s", strerror(errno));
+-    close(m_sgi_mb_if);
+-    return SRSRAN_ERROR_CANT_START;
+-  } else {
+-    m_logger.debug("Set TUN device name: %s", args->sgi_mb_if_name.c_str());
+-  }
+-
+   // Bring up the interface
+   int sgi_mb_sock = socket(AF_INET, SOCK_DGRAM, 0);
+   if (sgi_mb_sock < 0) {
+@@ -269,7 +260,7 @@
+     msg->clear();
+     int n;
+     do {
+-      n = read(m_sgi_mb_if, msg->msg, SRSRAN_MAX_BUFFER_SIZE_BYTES);
++      n = srsran_tun_read(m_sgi_mb_if, msg->msg, SRSRAN_MAX_BUFFER_SIZE_BYTES);
+     } while (n == -1 && errno == EAGAIN);
+ 
+     if (n < 0) {

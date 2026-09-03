@@ -1,0 +1,32 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 014/NNN] build: give the selected mbedtls priority over any other
+
+Every consumer of SEC_INCLUDE_DIRS adds it after the include paths
+inherited from the top level. When a second mbedtls sits in one of those,
+for example a newer one in a Homebrew prefix, its headers are used with the
+selected version's library.
+
+That combination does not compile. mbedtls 4 moved mbedtls_md_hmac behind
+MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS, so srsran/common/ssl.h fails against
+its header even when the 3.x library being linked exports the symbol.
+
+BEFORE puts the chosen include directory first.
+
+--- a/CMakeLists.txt	2026-09-03 15:18:08
++++ b/CMakeLists.txt	2026-09-03 15:18:08
+@@ -185,6 +185,14 @@
+ find_package(MbedTLS REQUIRED)
+ if (MBEDTLS_FOUND)
+   set(SEC_INCLUDE_DIRS "${MBEDTLS_INCLUDE_DIRS}")
++  # BEFORE matters when more than one mbedtls is installed. Every consumer of
++  # SEC_INCLUDE_DIRS adds it after the include paths inherited from here, so a
++  # second copy of mbedtls sitting in one of those, for example a newer one in
++  # a Homebrew prefix, supplies the headers instead. That mixes headers from
++  # one version with the library of another: mbedtls 4 hides mbedtls_md_hmac
++  # behind MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS, so srsran/common/ssl.h fails to
++  # compile even though the 3.x library being linked exports it.
++  include_directories(BEFORE ${MBEDTLS_INCLUDE_DIRS})
+   if(BUILD_STATIC)
+     set(SEC_LIBRARIES    "${MBEDTLS_STATIC_LIBRARIES}")
+   else(BUILD_STATIC)

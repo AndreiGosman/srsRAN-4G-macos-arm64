@@ -1,0 +1,61 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 004/NNN] common: name threads through a wrapper
+
+pthread_setname_np is spelled differently on the two systems. Linux takes
+the thread as an argument and can name any thread. Darwin names only the
+calling thread and caps the name at MAXTHREADNAMESIZE, which is 64 counting
+the terminator.
+
+Both call sites name the calling thread, so a small wrapper covers both
+systems. The Darwin branch truncates rather than failing, because
+pthread_setname_np returns ENAMETOOLONG for a longer name and the thread
+would end up unnamed.
+
+--- a/lib/include/srsran/common/threads.h	2026-09-03 15:13:08
++++ b/lib/include/srsran/common/threads.h	2026-09-03 15:13:08
+@@ -30,6 +30,26 @@
+ #else
+ #include <sys/timerfd.h>
+ #endif
++#include <string.h>
++
++/*
++ * Naming a thread is spelled differently on the two systems. Linux takes the
++ * thread as an argument and allows naming any thread; Darwin names only the
++ * calling thread and caps the name at MAXTHREADNAMESIZE, which is 64 counting
++ * the terminator. Both call sites here name the calling thread, so the Darwin
++ * form is enough.
++ */
++static inline void srsran_set_thread_name(const char* name)
++{
++#ifdef __APPLE__
++  char truncated[64];
++  strncpy(truncated, name, sizeof(truncated) - 1);
++  truncated[sizeof(truncated) - 1] = '\0';
++  pthread_setname_np(truncated);
++#else
++  pthread_setname_np(pthread_self(), name);
++#endif
++}
+ #include <unistd.h>
+ 
+ // Default priority for all threads below UHD threads
+@@ -88,7 +108,7 @@
+   void set_name(const std::string& name_)
+   {
+     name = name_;
+-    pthread_setname_np(pthread_self(), name.c_str());
++    srsran_set_thread_name(name.c_str());
+   }
+ 
+   void wait_thread_finish() { pthread_join(_thread, NULL); }
+@@ -112,7 +132,7 @@
+ private:
+   static void* thread_function_entry(void* _this)
+   {
+-    pthread_setname_np(pthread_self(), ((thread*)_this)->name.c_str());
++    srsran_set_thread_name(((thread*)_this)->name.c_str());
+     ((thread*)_this)->run_thread();
+     return NULL;
+   }

@@ -1,0 +1,51 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 005/NNN] common: no auxiliary vector on Darwin
+
+arm_get_isa reads the ARM hardware capability word through getauxval,
+declared in sys/auxv.h with the bit definitions in asm/hwcap.h. Darwin has
+neither header and no auxiliary vector to read.
+
+There is also nothing to detect. NEON is mandatory on ARMv8, and every
+Apple ARM64 part implements it, so the Darwin branch reports neon without
+querying anything.
+
+This became visible only after the processor detection fix, which is what
+first defines HAVE_NEONv8 on a Darwin build.
+
+--- a/lib/src/common/arch_select.cc	2026-09-03 15:13:08
++++ b/lib/src/common/arch_select.cc	2026-09-03 15:13:34
+@@ -26,10 +26,12 @@
+ #include <unistd.h>
+ 
+ #ifdef IS_ARM
+-#include <asm/hwcap.h>
+ #include <stdio.h>
++#ifdef __linux__
++#include <asm/hwcap.h>
+ #include <sys/auxv.h>
+ #define USER_HWCAP_NEON (1 << 12)
++#endif
+ #else
+ #include <cpuid.h>
+ #define X86_CPUID_BASIC_LEAF 1
+@@ -93,6 +95,7 @@
+ #ifdef IS_ARM
+ const char* arm_get_isa()
+ {
++#ifdef __linux__
+ #ifdef HAVE_NEONv8
+   if (getauxval(AT_HWCAP) & USER_HWCAP_NEON) {
+ #else
+@@ -102,6 +105,11 @@
+   } else {
+     return "generic";
+   }
++#else
++  /* Darwin exposes no auxiliary vector to query. Every ARM64 Apple part
++   * implements NEON, so there is nothing to detect. */
++  return "neon";
++#endif
+ }
+ #endif
+ 

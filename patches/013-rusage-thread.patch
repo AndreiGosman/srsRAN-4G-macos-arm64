@@ -1,0 +1,24 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 013/NNN] srslog: fall back to process accounting for RUSAGE_THREAD
+
+Darwin accounts resource usage per process and has no RUSAGE_THREAD. The
+benchmark falls back to RUSAGE_SELF, which counts context switches across
+the whole process and therefore overstates the figure this benchmark is
+measuring. That is recorded in a comment at the definition.
+
+--- a/lib/test/srslog/benchmarks/frontend_latency.cpp	2026-09-03 15:15:56
++++ b/lib/test/srslog/benchmarks/frontend_latency.cpp	2026-09-03 15:16:17
+@@ -22,6 +22,12 @@
+ #include "srsran/srslog/srslog.h"
+ #include <atomic>
+ #include <sys/resource.h>
++
++#ifndef RUSAGE_THREAD
++/* Darwin accounts resource usage per process, not per thread. The counts
++ * become process wide, which overstates this benchmark's context switches. */
++#define RUSAGE_THREAD RUSAGE_SELF
++#endif
+ #include <thread>
+ 
+ using namespace srslog;

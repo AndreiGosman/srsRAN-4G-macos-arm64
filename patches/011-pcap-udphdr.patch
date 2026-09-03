@@ -1,0 +1,72 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 011/NNN] common: declare a UDP header with the field names in use
+
+struct udphdr exists on both systems with the same layout and different
+field names. Linux calls them source, dest, len and check; Darwin uses the
+BSD names uh_sport, uh_dport, uh_ulen and uh_sum.
+
+The writes here use the Linux names, so declare a local header of the same
+layout instead of reaching for the system one. Mapping the names with
+preprocessor defines was the other option and was rejected: len and check
+are far too common as identifiers to define globally.
+
+--- a/lib/src/common/pcap.c	2026-09-03 15:15:56
++++ b/lib/src/common/pcap.c	2026-09-03 15:15:56
+@@ -21,7 +21,20 @@
+ 
+ #include "srsran/common/pcap.h"
+ #include <arpa/inet.h>
++#ifdef __linux__
+ #include <linux/udp.h>
++typedef struct udphdr srsran_udphdr_t;
++#else
++/* Darwin declares struct udphdr in netinet/udp.h with the BSD field names
++ * uh_sport, uh_dport, uh_ulen and uh_sum. The code below writes the Linux
++ * names, so use a locally declared header of the same layout instead. */
++typedef struct {
++  uint16_t source;
++  uint16_t dest;
++  uint16_t len;
++  uint16_t check;
++} srsran_udphdr_t;
++#endif
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/time.h>
+@@ -153,7 +166,7 @@
+   pcaprec_hdr_t  packet_header;
+   uint8_t        context_header[PCAP_CONTEXT_HEADER_MAX] = {};
+   int            offset                                  = 0;
+-  struct udphdr* udp_header;
++  srsran_udphdr_t* udp_header;
+   // uint16_t       tmp16;
+ 
+   /* Can't write if file wasn't successfully opened */
+@@ -162,7 +175,7 @@
+     return 0;
+   }
+   // Add dummy UDP header, start with src and dest port
+-  udp_header       = (struct udphdr*)context_header;
++  udp_header       = (srsran_udphdr_t*)context_header;
+   udp_header->dest = htons(0xdead);
+   offset += 2;
+   udp_header->source = htons(0xbeef);
+@@ -429,7 +442,7 @@
+ int NR_PCAP_MAC_UDP_WritePDU(FILE* fd, mac_nr_context_info_t* context, const unsigned char* PDU, unsigned int length)
+ {
+   uint8_t        context_header[PCAP_CONTEXT_HEADER_MAX] = {};
+-  struct udphdr* udp_header;
++  srsran_udphdr_t* udp_header;
+   int            offset = 0;
+ 
+   /* Can't write if file wasn't successfully opened */
+@@ -439,7 +452,7 @@
+   }
+ 
+   // Add dummy UDP header, start with src and dest port
+-  udp_header       = (struct udphdr*)context_header;
++  udp_header       = (srsran_udphdr_t*)context_header;
+   udp_header->dest = htons(0xdead);
+   offset += 2;
+   udp_header->source = htons(0xbeef);

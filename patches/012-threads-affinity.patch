@@ -1,0 +1,75 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 012/NNN] common: no thread affinity on Darwin
+
+cpu_set_t, the CPU_* macros, pthread_attr_setaffinity_np and
+pthread_getaffinity_np are Linux extensions. Darwin has no equivalent that
+takes a mask: thread_policy_set with THREAD_AFFINITY_POLICY is an advisory
+hint to the scheduler and cannot pin a thread to a chosen core.
+
+The request is therefore dropped rather than approximated, so that a caller
+asking for a specific core is not told it succeeded. The affinity reporting
+in threads_print_self is compiled out for the same reason.
+
+--- a/lib/src/common/threads.c	2026-09-03 15:15:56
++++ b/lib/src/common/threads.c	2026-09-03 15:21:36
+@@ -53,7 +53,9 @@
+ 
+   pthread_attr_t     attr;
+   struct sched_param param;
++#ifdef __linux__
+   cpu_set_t          cpuset;
++#endif
+   bool               attr_enable = false;
+ 
+ #ifdef PER_THREAD_PRIO
+@@ -126,6 +128,7 @@
+       fprintf(stderr, "Error not enough privileges to set Scheduling priority\n");
+     }
+   }
++#ifdef __linux__
+   if (cpu > 0) {
+     if (cpu > 50) {
+       uint32_t mask;
+@@ -146,6 +149,12 @@
+       perror("pthread_attr_setaffinity_np");
+     }
+   }
++#else
++  /* Darwin exposes no way to pin a thread to a core. thread_policy_set with
++   * THREAD_AFFINITY_POLICY is an advisory hint that carries no mask, so the
++   * request is dropped rather than faked. */
++  (void)cpu;
++#endif
+ 
+ // TSAN seems to have issues with thread attributes when running as normal user, disable them in that case
+ #if HAVE_TSAN
+@@ -179,7 +188,9 @@
+ void threads_print_self()
+ {
+   pthread_t          thread;
++#ifdef __linux__
+   cpu_set_t          cpuset;
++#endif
+   struct sched_param param;
+   int                policy;
+   const char*        p;
+@@ -187,6 +198,7 @@
+ 
+   thread = pthread_self();
+ 
++#ifdef __linux__
+   s = pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+   if (s != 0) {
+     printf("error pthread_getaffinity_np: %s\n", strerror(s));
+@@ -198,6 +210,10 @@
+       printf("    CPU %d\n", j);
+     }
+   }
++#else
++  /* No affinity to report on Darwin. */
++  (void)j;
++#endif
+ 
+   s = pthread_getschedparam(thread, &policy, &param);
+   if (s != 0) {

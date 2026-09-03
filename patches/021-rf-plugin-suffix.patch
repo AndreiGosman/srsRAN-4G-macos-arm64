@@ -1,0 +1,59 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 021/NNN] rf: follow the platform suffix for RF plugins
+
+The plugin table names each RF backend literally, with a .so suffix. Darwin
+builds them as .dylib, so every plugin is skipped at start up:
+
+  Skipping RF plugin libsrsran_rf_uhd.so: dlopen(...) no such file
+
+which leaves no RF backend at all, ZeroMQ included. Select the suffix from
+the platform instead.
+
+--- a/lib/src/phy/rf/rf_dev.h	2026-09-03 15:52:47
++++ b/lib/src/phy/rf/rf_dev.h	2026-09-03 15:52:47
+@@ -25,8 +25,16 @@
+ /* Define implementation for UHD */
+ #ifdef ENABLE_UHD
+ #ifdef ENABLE_RF_PLUGINS
+-static srsran_rf_plugin_t plugin_uhd = {"libsrsran_rf_uhd.so", NULL, NULL};
++/* Shared objects are .so on Linux and .dylib on Darwin. The loader below
++ * names the plugins literally, so the suffix has to follow the platform. */
++#ifdef __APPLE__
++#define SRSRAN_RF_PLUGIN_SUFFIX ".dylib"
+ #else
++#define SRSRAN_RF_PLUGIN_SUFFIX ".so"
++#endif
++
++static srsran_rf_plugin_t plugin_uhd = {"libsrsran_rf_uhd" SRSRAN_RF_PLUGIN_SUFFIX, NULL, NULL};
++#else
+ #include "rf_uhd_imp.h"
+ static srsran_rf_plugin_t plugin_uhd   = {"", NULL, &srsran_rf_dev_uhd};
+ #endif
+@@ -35,7 +43,7 @@
+ /* Define implementation for bladeRF */
+ #ifdef ENABLE_BLADERF
+ #ifdef ENABLE_RF_PLUGINS
+-static srsran_rf_plugin_t plugin_blade = {"libsrsran_rf_blade.so", NULL, NULL};
++static srsran_rf_plugin_t plugin_blade = {"libsrsran_rf_blade" SRSRAN_RF_PLUGIN_SUFFIX, NULL, NULL};
+ #else
+ #include "rf_blade_imp.h"
+ static srsran_rf_plugin_t plugin_blade = {"", NULL, &srsran_rf_dev_blade};
+@@ -45,7 +53,7 @@
+ /* Define implementation for SoapySDR */
+ #ifdef ENABLE_SOAPYSDR
+ #ifdef ENABLE_RF_PLUGINS
+-static srsran_rf_plugin_t plugin_soapy = {"libsrsran_rf_soapy.so", NULL, NULL};
++static srsran_rf_plugin_t plugin_soapy = {"libsrsran_rf_soapy" SRSRAN_RF_PLUGIN_SUFFIX, NULL, NULL};
+ #else
+ #include "rf_soapy_imp.h"
+ static srsran_rf_plugin_t plugin_soapy = {"", NULL, &srsran_rf_dev_soapy};
+@@ -55,7 +63,7 @@
+ /* Define implementation for ZeroMQ */
+ #ifdef ENABLE_ZEROMQ
+ #ifdef ENABLE_RF_PLUGINS
+-static srsran_rf_plugin_t plugin_zmq = {"libsrsran_rf_zmq.so", NULL, NULL};
++static srsran_rf_plugin_t plugin_zmq = {"libsrsran_rf_zmq" SRSRAN_RF_PLUGIN_SUFFIX, NULL, NULL};
+ #else
+ #include "rf_zmq_imp.h"
+ static srsran_rf_plugin_t plugin_zmq   = {"", NULL, &srsran_rf_dev_zmq};

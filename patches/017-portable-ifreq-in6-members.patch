@@ -1,0 +1,88 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 017/NNN] use the portable spellings for ifreq and in6_addr members
+
+Three spellings here are glibc-specific where a portable one exists and
+means the same thing.
+
+ifr_ifrn.ifrn_name reaches into the union directly. Linux defines ifr_name
+as a macro for exactly that member and the BSD struct spells it that way to
+begin with, so ifr_name is correct on both.
+
+ifr_netmask and ifr_addr name different members of the same union at the
+same offset on Linux, and SIOCSIFNETMASK reads the mask out of ifr_addr on
+BSD, so ifr_addr works on both.
+
+in6_u.u6_addr8 is the glibc member name. Both glibc and Darwin define
+s6_addr as a macro for their own spelling of it.
+
+Nothing here changes behaviour on Linux.
+
+--- a//tmp/gw.cc.orig5	2026-09-03 15:45:40
++++ b/srsue/src/stack/upper/gw.cc	2026-09-03 15:48:51
+@@ -431,8 +431,8 @@
+   memset(&ifr, 0, sizeof(ifr));
+   ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+   strncpy(
+-      ifr.ifr_ifrn.ifrn_name, args.tun_dev_name.c_str(), std::min(args.tun_dev_name.length(), (size_t)(IFNAMSIZ - 1)));
+-  ifr.ifr_ifrn.ifrn_name[IFNAMSIZ - 1] = 0;
++      ifr.ifr_name, args.tun_dev_name.c_str(), std::min(args.tun_dev_name.length(), (size_t)(IFNAMSIZ - 1)));
++  ifr.ifr_name[IFNAMSIZ - 1] = 0;
+   if (0 > ioctl(tun_fd, TUNSETIFF, &ifr)) {
+     err_str = strerror(errno);
+     logger.error("Failed to set TUN device name: %s", err_str);
+--- a//tmp/gtpu.cc.orig5	2026-09-03 15:45:40
++++ b/srsepc/src/spgw/gtpu.cc	2026-09-03 15:48:51
+@@ -113,8 +113,8 @@
+   memset(&ifr, 0, sizeof(ifr));
+   ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+   strncpy(
+-      ifr.ifr_ifrn.ifrn_name, args->sgi_if_name.c_str(), std::min(args->sgi_if_name.length(), (size_t)(IFNAMSIZ - 1)));
+-  ifr.ifr_ifrn.ifrn_name[IFNAMSIZ - 1] = '\0';
++      ifr.ifr_name, args->sgi_if_name.c_str(), std::min(args->sgi_if_name.length(), (size_t)(IFNAMSIZ - 1)));
++  ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+ 
+   if (ioctl(m_sgi, TUNSETIFF, &ifr) < 0) {
+     m_logger.error("Failed to set TUN device name: %s", strerror(errno));
+@@ -155,8 +155,8 @@
+     return SRSRAN_ERROR_CANT_START;
+   }
+ 
+-  ifr.ifr_netmask.sa_family = AF_INET;
+-  if (inet_pton(ifr.ifr_netmask.sa_family , "255.255.255.0", &((struct sockaddr_in*)&ifr.ifr_netmask)->sin_addr.s_addr) != 1) {
++  ifr.ifr_addr.sa_family = AF_INET;
++  if (inet_pton(ifr.ifr_addr.sa_family , "255.255.255.0", &((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr) != 1) {
+     perror("inet_pton");
+     return false;
+   }
+--- a//tmp/mbms-gw.cc.orig5	2026-09-03 15:45:40
++++ b/srsepc/src/mbms-gw/mbms-gw.cc	2026-09-03 15:48:51
+@@ -124,10 +124,10 @@
+ 
+   memset(&ifr, 0, sizeof(ifr));
+   ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+-  strncpy(ifr.ifr_ifrn.ifrn_name,
++  strncpy(ifr.ifr_name,
+           args->sgi_mb_if_name.c_str(),
+           std::min(args->sgi_mb_if_name.length(), (size_t)IFNAMSIZ - 1));
+-  ifr.ifr_ifrn.ifrn_name[IFNAMSIZ - 1] = '\0';
++  ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+ 
+   if (ioctl(m_sgi_mb_if, TUNSETIFF, &ifr) < 0) {
+     m_logger.error("Failed to set TUN device name: %s", strerror(errno));
+@@ -179,8 +179,8 @@
+     return SRSRAN_ERROR_CANT_START;
+   }
+ 
+-  ifr.ifr_netmask.sa_family                                = AF_INET;
+-  if (inet_pton(ifr.ifr_netmask.sa_family, args->sgi_mb_if_mask.c_str(), &((struct sockaddr_in*)&ifr.ifr_netmask)->sin_addr.s_addr ) != 1) {
++  ifr.ifr_addr.sa_family                                = AF_INET;
++  if (inet_pton(ifr.ifr_addr.sa_family, args->sgi_mb_if_mask.c_str(), &((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr ) != 1) {
+     m_logger.error("Invalid sgi_mb_if_mask: %s", args->sgi_mb_if_mask.c_str());
+     srsran::console("Invalid sgi_mb_if_mask: %s\n", args->sgi_mb_if_mask.c_str());
+     perror("inet_pton");
+--- a/srsue/src/stack/upper/tft_packet_filter.cc
++++ b/srsue/src/stack/upper/tft_packet_filter.cc
+@@ -252,1 +252,1 @@
+-        match &= ((ipv6_remote_addr[i] ^ ip6_pkt->daddr.in6_u.u6_addr8[i]) & ipv6_remote_addr_mask[i]) == 0;
++        match &= ((ipv6_remote_addr[i] ^ ip6_pkt->daddr.s6_addr[i]) & ipv6_remote_addr_mask[i]) == 0;

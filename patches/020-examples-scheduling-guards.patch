@@ -1,0 +1,56 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 020/NNN] examples: guard the Linux-only scheduling calls
+
+pdsch_ue asks for thread affinity with cpu_set_t and
+pthread_setaffinity_np, and benchmark_radio sets a real-time policy with
+sched_setscheduler. Neither exists on Darwin.
+
+The affinity request is refused rather than ignored, so that a run asking
+for a specific core is not told it succeeded. The scheduling policy is
+dropped with a note: srsran_thread_create already applies the equivalent
+per-thread priority through pthread_setschedparam.
+
+--- a/lib/examples/pdsch_ue.c	2026-09-03 15:52:04
++++ b/lib/examples/pdsch_ue.c	2026-09-03 15:52:04
+@@ -424,6 +424,7 @@
+   if (prog_args.mbsfn_area_id > -1) {
+     generate_mcch_table(mch_table, prog_args.mbsfn_sf_mask);
+   }
++#ifdef __linux__
+   if (prog_args.cpu_affinity > -1) {
+     cpu_set_t cpuset;
+     pthread_t thread;
+@@ -440,6 +441,14 @@
+       }
+     }
+   }
++#else
++  if (prog_args.cpu_affinity > -1) {
++    /* No mask-based thread affinity exists on this system, so the request is
++     * refused rather than silently ignored. */
++    ERROR("CPU affinity is not supported on this platform");
++    exit(-1);
++  }
++#endif
+ 
+   if (prog_args.net_port > 0) {
+     if (srsran_netsink_init(&net_sink, prog_args.net_address, prog_args.net_port, SRSRAN_NETSINK_UDP)) {
+--- a/lib/src/radio/test/benchmark_radio.cc	2026-09-03 15:52:04
++++ b/lib/src/radio/test/benchmark_radio.cc	2026-09-03 15:52:04
+@@ -402,10 +402,15 @@
+   }
+ 
+   // setup thread priority
++#ifdef __linux__
+   struct sched_param schedp;
+   memset(&schedp, 0, sizeof(schedp));
+   schedp.sched_priority = 90;
+   sched_setscheduler(0, SCHED_FIFO, &schedp);
++#else
++  // sched_setscheduler is a Linux interface. The per-thread equivalent here is
++  // pthread_setschedparam, which srsran_thread_create already applies.
++#endif
+ 
+   /* Receive */
+   printf(

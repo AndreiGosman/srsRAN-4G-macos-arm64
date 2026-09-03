@@ -1,0 +1,29 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 019/NNN] build: make the C++ standard selectable
+
+The tree pins -std=c++14. UHD 4.7 and later use std::is_same_v and
+std::is_arithmetic_v in its public headers, which are C++17, so a build
+against a recent UHD fails inside uhd/utils/cast.hpp and
+uhd/rfnoc/actions.hpp before reaching any code here.
+
+Passing -std=c++17 on the command line does not help, because the pinned
+flag is appended afterwards and the last one wins. Turning it into a cache
+variable leaves the default at c++14 and lets a build that needs the newer
+standard ask for it.
+
+--- a/CMakeLists.txt	2026-09-03 15:50:59
++++ b/CMakeLists.txt	2026-09-03 15:50:59
+@@ -372,7 +372,11 @@
+ endmacro(ADD_C_COMPILER_FLAG_IF_AVAILABLE)
+ 
+ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-comment -Wno-reorder -Wno-unused-variable -Wtype-limits -std=c++14 -fno-strict-aliasing")
++  # UHD 4.7 and later use std::is_same_v and friends in its public headers,
++  # which are C++17. The tree itself still builds as C++14, so the standard is
++  # a knob rather than a hard change.
++  set(SRSRAN_CXX_STANDARD "c++14" CACHE STRING "C++ standard to build with")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-comment -Wno-reorder -Wno-unused-variable -Wtype-limits -std=${SRSRAN_CXX_STANDARD} -fno-strict-aliasing")
+ 
+   ADD_CXX_COMPILER_FLAG_IF_AVAILABLE("-Wno-unused-but-set-variable" HAVE_WNO_UNUSED_BUT_SET_VARIABLE)
+ 

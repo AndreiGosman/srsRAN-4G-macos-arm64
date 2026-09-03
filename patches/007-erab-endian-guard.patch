@@ -1,0 +1,20 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 007/NNN] srsepc: drop an unused endian.h dependency
+
+Nothing in this file uses a byte-order macro. The include is left over and
+Darwin has no endian.h, so it breaks the build for no gain.
+
+--- a/srsepc/src/mme/s1ap_erab_mngmt_proc.cc	2026-09-03 15:13:08
++++ b/srsepc/src/mme/s1ap_erab_mngmt_proc.cc	2026-09-03 15:13:54
+@@ -25,7 +25,10 @@
+ #include "srsran/common/buffer_pool.h"
+ #include "srsran/common/int_helpers.h"
+ #include "srsran/common/liblte_security.h"
++/* Nothing in this file uses a byte-order macro. Darwin has no endian.h. */
++#ifdef __linux__
+ #include <endian.h>
++#endif
+ 
+ namespace srsepc {
+ 

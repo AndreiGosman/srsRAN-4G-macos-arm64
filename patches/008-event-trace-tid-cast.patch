@@ -1,0 +1,41 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 008/NNN] srslog: cast pthread_t through uintptr_t
+
+pthread_t is an integer on Linux and a pointer on Darwin, so casting it
+straight to unsigned int is a narrowing cast from a pointer and clang
+refuses it.
+
+Going through uintptr_t makes the truncation explicit. The value is only a
+trace identifier, so losing the high half is acceptable; two threads can
+collide in the trace under heavy threading, which is the same risk the
+original cast already carried on a 64-bit Linux build.
+
+--- a/lib/src/srslog/event_trace.cpp	2026-09-03 15:13:08
++++ b/lib/src/srslog/event_trace.cpp	2026-09-03 15:13:34
+@@ -22,6 +22,7 @@
+ #include "srsran/srslog/event_trace.h"
+ #include "sinks/buffered_file_sink.h"
+ #include "srsran/srslog/srslog.h"
++#include <cstdint>
+ #include <ctime>
+ 
+ #undef trace_duration_begin
+@@ -104,7 +105,7 @@
+ 
+   char fmt_time[24];
+   format_time(fmt_time, sizeof(fmt_time));
+-  (*tracer)("[%s] [TID:%0u] Entering \"%s\": %s", fmt_time, (unsigned)::pthread_self(), category, name);
++  (*tracer)("[%s] [TID:%0u] Entering \"%s\": %s", fmt_time, (unsigned)(uintptr_t)::pthread_self(), category, name);
+ }
+ 
+ void trace_duration_end(const std::string& category, const std::string& name)
+@@ -115,7 +116,7 @@
+ 
+   char fmt_time[24];
+   format_time(fmt_time, sizeof(fmt_time));
+-  (*tracer)("[%s] [TID:%0u] Leaving \"%s\": %s", fmt_time, (unsigned)::pthread_self(), category, name);
++  (*tracer)("[%s] [TID:%0u] Leaving \"%s\": %s", fmt_time, (unsigned)(uintptr_t)::pthread_self(), category, name);
+ }
+ 
+ } // namespace srslog

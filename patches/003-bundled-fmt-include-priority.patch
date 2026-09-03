@@ -1,0 +1,38 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 003/NNN] srslog: give the bundled fmt priority over a system one
+
+bundled/fmt/format.cc includes "fmt/format-inl.h". That does not resolve
+next to the source file, which lives in lib/src/srslog/bundled/fmt/, so
+the quoted include falls through to the -I list. The directory holding
+the bundled headers is added there without BEFORE, so it lands after the
+include paths inherited from the top level.
+
+On macOS those inherited paths contain /opt/homebrew/include, and if fmt
+is installed through Homebrew the build silently compiles the tree's
+format.cc against a different major version of the library. With fmt
+12.2.0 present that produces around a hundred errors naming symbols that
+the version in tree still expects: basic_data, float_specs, grouping_impl,
+FMT_SNPRINTF, dynamic_arg_list.
+
+Adding BEFORE puts the bundled directory first, so the tree compiles
+against its own copy whatever else is installed. Nothing about this is
+specific to Darwin; any system with fmt on an explicit include path was
+exposed the same way.
+
+--- a/lib/src/srslog/CMakeLists.txt	2026-09-03 15:05:02
++++ b/lib/src/srslog/CMakeLists.txt	2026-09-03 15:05:02
+@@ -24,7 +24,12 @@
+     srslog_c.cpp
+     event_trace.cpp)
+ 
+-include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
++# BEFORE matters. bundled/fmt/format.cc includes "fmt/format-inl.h", which
++# does not resolve next to the source file, so it falls through to the -I
++# list. Any fmt installed system wide, for example Homebrew's on macOS, is
++# reached first without this and supplies a different major version of the
++# library than the tree expects.
++include_directories(BEFORE ${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
+ include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/formatters)
+ 
+ set(SOURCES
