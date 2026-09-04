@@ -236,12 +236,16 @@ actually affects.
 | [016](patches/016-glibc-prereq-guard.patch) | Test for `__GLIBC_PREREQ` before calling it | musl, so Alpine and most embedded builds | not yet opened |
 | [017](patches/017-portable-ifreq-in6-members.patch) | Portable `ifreq` and `in6_addr` member spellings | No behaviour change on Linux; makes the code build on BSD | not yet opened |
 | [019](patches/019-cxx-standard-option.patch) | Make the C++ standard selectable | Anyone building against UHD 4.7 or later | not yet opened |
-| [024](patches/024-cell-search-getopt.patch) | Fix `cell_search` getopt parsing | Every platform. Every flag after the first is silently ignored | not yet opened |
+| [024](patches/024-cell-search-getopt.patch) | Fix `cell_search` getopt parsing | Every platform. Every flag after the first is silently ignored | [#1545](https://github.com/srsran/srsRAN_4G/pull/1545) |
 
-The first is open. The remaining six are prepared and held deliberately:
-patch 001 is the strongest argument and the smallest diff, so it goes alone as
-a test of whether the maintainers want this class of change at all. The others
-follow once there is an answer.
+Two are open. The remaining six are prepared and held deliberately: patch 001
+is the strongest argument and the smallest diff, so it goes alone as a test of
+whether the maintainers want this class of build and portability change at all,
+and the others follow once there is an answer.
+
+Patch 024 did not wait for that answer, because it is a different kind of
+change: a plain functional bug in an example program, with a one-line
+reproduction, that stands or falls on its own.
 
 ## Repository layout
 
