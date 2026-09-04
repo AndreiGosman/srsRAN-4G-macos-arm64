@@ -1,7 +1,7 @@
 # srsRAN 4G on macOS ARM64
 
 A port of [srsRAN 4G](https://github.com/srsran/srsRAN_4G) to native Apple
-Silicon: 23 numbered patches, four compatibility shims, and a small set of
+Silicon: 25 numbered patches, four compatibility shims, and a small set of
 `linux/*` uapi headers.
 
 This repository carries no srsRAN source. Clone upstream, apply the patches,
@@ -12,7 +12,12 @@ a ZeroMQ radio; S1AP rides SCTP through a userspace stack; the UE attaches and
 is assigned 172.16.0.2; a ping to the SGi gateway returns with no loss at 20 to
 45 ms. Transcripts are in [docs/phase1-validation.md](docs/phase1-validation.md).
 
-Nothing here transmits. Both ends exchange IQ samples over TCP on localhost.
+**Phase 2 is validated on real hardware.** Live cell search with a LibreSDR
+B220 mini inventoried 34 LTE cells across bands 1, 3 and 7 in Bucharest. That
+is receive only; nothing is transmitted at any point.
+
+The Phase 1 loopback transmits nothing either: both ends exchange IQ samples
+over TCP on localhost.
 
 ## Motivation
 
@@ -28,7 +33,7 @@ core included, without a Linux machine or a virtual one in the path. That is
 useful for protocol work, for teaching, and as the foundation for the Osmocom
 ports that follow.
 
-Seven of the 23 patches fix defects that have nothing to do with macOS. Those
+Eight of the 25 patches fix defects that have nothing to do with macOS. Those
 are listed under [Upstream contributions](#upstream-contributions).
 
 ## Architecture
@@ -90,7 +95,7 @@ cd srsRAN-4G-macos-arm64
 
 That installs the Homebrew dependencies, builds and installs usrsctp and
 libsctp-compat, runs the SCTP test suite, installs the `linux/*` headers,
-clones srsRAN, applies the 23 patches, configures, builds, installs, and
+clones srsRAN, applies the 25 patches, configures, builds, installs, and
 verifies that all three binaries start in a clean environment.
 
 Everything lands under `~/sdr-lab` by default; set `SRSRAN_PREFIX` to change
@@ -218,7 +223,7 @@ stack twice.
 
 ## Upstream contributions
 
-Seven of the 23 patches fix defects that are not specific to macOS. They are
+Eight of the 25 patches fix defects that are not specific to macOS. They are
 being submitted separately to `srsran/srsRAN_4G`, each argued on the platform it
 actually affects.
 
@@ -231,6 +236,7 @@ actually affects.
 | [016](patches/016-glibc-prereq-guard.patch) | Test for `__GLIBC_PREREQ` before calling it | musl, so Alpine and most embedded builds | not yet opened |
 | [017](patches/017-portable-ifreq-in6-members.patch) | Portable `ifreq` and `in6_addr` member spellings | No behaviour change on Linux; makes the code build on BSD | not yet opened |
 | [019](patches/019-cxx-standard-option.patch) | Make the C++ standard selectable | Anyone building against UHD 4.7 or later | not yet opened |
+| [024](patches/024-cell-search-getopt.patch) | Fix `cell_search` getopt parsing | Every platform. Every flag after the first is silently ignored | not yet opened |
 
 The first is open. The remaining six are prepared and held deliberately:
 patch 001 is the strongest argument and the smallest diff, so it goes alone as
@@ -240,7 +246,7 @@ follow once there is an answer.
 ## Repository layout
 
 ```
-patches/                 23 numbered patches, each with a commit-style rationale
+patches/                 25 numbered patches, each with a commit-style rationale
 shims/                   The four compatibility headers the patches install
 linux-compat-headers/    linux/* uapi headers plus their installer
 scripts/                 install.sh, install_usrsctp.sh, run-faza1.sh
@@ -265,6 +271,21 @@ at master, no patches, and
 
 Tested on Darwin 25.5 arm64 with Apple clang 21 and CMake 4.4.3, against srsRAN
 4G at upstream `6bcbd9e5b`.
+
+## Hardware note for B210 owners
+
+Patch [025](patches/025-rf-uhd-libresdr-mcr.patch) lowers the default master
+clock rate for B200 series devices from 23.04 MHz to 11.52 MHz, because the
+LibreSDR B220 mini presents itself as one and loses its VITA control channel
+above that. A genuine Ettus B210 is unaffected by the hardware limit and can be
+put back on the upstream default:
+
+```
+device_args = master_clock_rate=23.04e6
+```
+
+This patch is the one change in the series that is deliberately not upstream
+material.
 
 ## Status and limitations
 
