@@ -61,7 +61,7 @@ delivery through poll(), disarm, and timerfd_gettime.
  namespace srsepc {
 --- /dev/null
 +++ b/lib/include/srsran/common/timerfd_compat.h
-@@ -0,0 +1,     340 @@
+@@ -0,0 +1,340 @@
 +/**
 + * timerfd for Darwin, backed by kqueue.
 + *

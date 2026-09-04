@@ -23,7 +23,7 @@ for bind and sendto.
 
 --- /dev/null
 +++ b/lib/include/srsran/common/unix_socket_compat.h
-@@ -0,0 +1,      77 @@
+@@ -0,0 +1,77 @@
 +/**
 + * UNIX socket addressing, with a filesystem fallback for systems that have no
 + * abstract namespace.

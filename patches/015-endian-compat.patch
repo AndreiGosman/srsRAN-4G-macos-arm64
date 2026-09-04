@@ -18,7 +18,7 @@ mbedtls headers in this series.
 
 --- /dev/null
 +++ b/lib/include/srsran/common/endian_compat.h
-@@ -0,0 +1,      42 @@
+@@ -0,0 +1,42 @@
 +/**
 + * Byte order macros for platforms without endian.h.
 + *
@@ -61,13 +61,27 @@ mbedtls headers in this series.
 +#endif /* __APPLE__ */
 +
 +#endif /* SRSRAN_ENDIAN_COMPAT_H */
---- a/lib/src/mac/pdu.cc
-+++ b/lib/src/mac/pdu.cc
-@@ -28,2 +28,3 @@
-+#include "srsran/common/endian_compat.h"
- #include "srsran/mac/pdu.h"
+diff --git a/lib/src/mac/mac_sch_pdu_nr.cc b/lib/src/mac/mac_sch_pdu_nr.cc
+index 4ecc7bfbf..a101f6d86 100644
 --- a/lib/src/mac/mac_sch_pdu_nr.cc
 +++ b/lib/src/mac/mac_sch_pdu_nr.cc
-@@ -22,2 +22,3 @@
+@@ -19,6 +19,7 @@
+  *
+  */
+ 
 +#include "srsran/common/endian_compat.h"
  #include "srsran/mac/mac_sch_pdu_nr.h"
+ 
+ namespace srsran {
+diff --git a/lib/src/mac/pdu.cc b/lib/src/mac/pdu.cc
+index 12c4aa0bd..de672e8e5 100644
+--- a/lib/src/mac/pdu.cc
++++ b/lib/src/mac/pdu.cc
+@@ -25,6 +25,7 @@
+ #include <strings.h>
+ 
+ #include "srsran/common/standard_streams.h"
++#include "srsran/common/endian_compat.h"
+ #include "srsran/mac/pdu.h"
+ 
+ extern "C" {

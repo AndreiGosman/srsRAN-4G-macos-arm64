@@ -35,7 +35,7 @@ expected.
 
 --- /dev/null
 +++ b/lib/include/srsran/common/tun_compat.h
-@@ -0,0 +1,     188 @@
+@@ -0,0 +1,188 @@
 +/**
 + * TUN device access, with a Darwin utun backend.
 + *
@@ -389,7 +389,7 @@ expected.
  bool gw::find_ipv6_addr(struct in6_addr* in6_out)
  {
    int               n, rtattrlen, fd = -1;
-@@ -728,4 +760,19 @@
+@@ -728,4 +760,21 @@
      close(fd);
    }
  }
@@ -397,7 +397,9 @@ expected.
 +bool gw::find_ipv6_addr(struct in6_addr* in6_out)
 +{
 +  // Netlink is a Linux interface. Nothing autoconfigures a link-local address
-+  // on a freshly created utun, so there is none to find.
++  // on a freshly created utun either: a utun comes up with the flags
++  // UP,POINTOPOINT,RUNNING,MULTICAST and no address of any family, verified on
++  // Darwin 25.5, so there is none to find and none to delete.
 +  (void)in6_out;
 +  return false;
 +}
