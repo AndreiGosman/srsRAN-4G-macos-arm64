@@ -1,0 +1,42 @@
+From: Andrei Gosman <andrei.gosman@gmail.com>
+Date: 2026-09-03
+Subject: [PATCH 025/NNN] rf_uhd: lower the default master clock rate for LibreSDR B220
+
+The LibreSDR B220 mini identifies itself as a B200 series device, so it
+takes the 23.04 MHz default, but it is not one. It runs the stock B210
+bitstream on different silicon, an Artix-7 XC7A200T, and loses its VITA
+control channel above roughly 11.52 MHz.
+
+Measured on one unit: 11.52 stable, 15.36 and 23.04 and 30.72 all fail in
+wait_for_ack. At 11.52 the device is good for PSS, SSS and MIB at 1.92
+MSps, which is what cell search needs; a 20 MHz cell decodes only
+partially.
+
+Deliberately not proposed upstream. A genuine Ettus B210 handles 61.44
+without trouble, so lowering the default there would cost those users
+bandwidth for no reason. This belongs in the macOS fork, where the LibreSDR
+is the hardware in use. A B210 owner can restore the upstream default with
+master_clock_rate=23.04e6 in device_args, and the code comment says so.
+
+diff --git a/lib/src/phy/rf/rf_uhd_imp.cc b/lib/src/phy/rf/rf_uhd_imp.cc
+index f1ad4df9a..72834aa73 100644
+--- a/lib/src/phy/rf/rf_uhd_imp.cc
++++ b/lib/src/phy/rf/rf_uhd_imp.cc
+@@ -701,7 +701,16 @@ static int uhd_init(rf_uhd_handler_t* handler, char* args, uint32_t nof_channels
+   // Parse/Select master clock rate
+   if (not device_addr.has_key("master_clock_rate") and device_addr.has_key("type")) {
+     // Default master clock rate for B200 series
+-    std::string mcr = "23.04e6";
++    // Lowered from 23.04e6 for LibreSDR B220 mini, which presents itself as a
++    // B200 series device but runs the stock B210 bitstream on different
++    // silicon and loses its VITA control channel above this rate. Measured on
++    // one unit: 11.52 stable, 15.36 and 23.04 and 30.72 all fail in
++    // wait_for_ack. Enough for PSS, SSS and MIB at 1.92 MSps; a 20 MHz cell
++    // decodes only partially.
++    //
++    // A genuine Ettus B210 is unaffected and can be put back on the upstream
++    // default with master_clock_rate=23.04e6 in device_args.
++    std::string mcr = "11.52e6";
+ 
+     if (device_addr["type"] == "x300") {
+       mcr = "184.32e6";
