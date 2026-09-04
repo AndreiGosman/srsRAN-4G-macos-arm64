@@ -65,11 +65,40 @@ fi
 cd "$SRC/srsRAN_4G"
 
 if [ ! -f .macos-arm64-patched ]; then
-  say "applying $(ls "$REPO"/patches/*.patch | wc -l | tr -d ' ') patches"
+  count="$(ls "$REPO"/patches/*.patch | wc -l | tr -d ' ')"
+  say "applying $count patches"
+
+  # The series is sequential: several patches touch regions an earlier one
+  # created, so they cannot be checked in advance against an unpatched tree.
+  # Apply them in order instead and undo everything on the first failure, so a
+  # half-patched tree never survives to the build. This is a git checkout of
+  # upstream, so the rollback is exact.
+  failed=""
   for p in "$REPO"/patches/*.patch; do
-    printf '  %s\n' "$(basename "$p")"
-    patch -p1 --forward < "$p" || { echo "failed on $(basename "$p")"; exit 1; }
+    printf '  %s' "$(basename "$p")"
+    if patch -p1 --forward --silent < "$p" >/dev/null 2>&1; then
+      printf '\n'
+    else
+      printf '  FAILED\n'
+      failed="$(basename "$p")"
+      break
+    fi
   done
+
+  if [ -n "$failed" ]; then
+    echo
+    echo "Rolling back: $failed did not apply."
+    git checkout -- .
+    git clean -qfd
+    find . -name '*.orig' -o -name '*.rej' | xargs rm -f 2>/dev/null || true
+    echo "The tree is back to $(git log -1 --format=%h) with no changes."
+    echo
+    echo "Either the patch is malformed, or upstream has moved. The series was"
+    echo "verified against 6bcbd9e5b; see docs/session-summary.md."
+    exit 1
+  fi
+
+  echo "  all $count applied"
   touch .macos-arm64-patched
 else
   echo "  already patched, skipping"
