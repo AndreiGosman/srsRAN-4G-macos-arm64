@@ -317,5 +317,4 @@ separate project under LGPL-2.1-or-later, and usrsctp is BSD-2-Clause.
 
 srsRAN 4G is the work of [Software Radio Systems](https://www.srs.io/).
 
-Port developed by Andrei Gosman across Cowork and Claude Code CLI sessions on
-2026-09-03.
+Port developed by Andrei Gosman and Claude Code CLI.
