@@ -65,6 +65,17 @@ fi
 cd "$SRC/srsRAN_4G"
 
 if [ ! -f .macos-arm64-patched ]; then
+  # Pin to the exact upstream commit this kit is verified against. A fresh
+  # clone lands on upstream master which drifts with time; a stale local
+  # checkout can be behind or ahead. The series applies cleanly at this
+  # commit; see docs/session-summary.md.
+  BASELINE="6bcbd9e5bf8686aa7085202cd847c5ddd64a9c16"
+  say "checkout srsRAN_4G at verified baseline $BASELINE"
+  if ! git rev-parse -q --verify "$BASELINE^{commit}" >/dev/null; then
+    git fetch -q origin
+  fi
+  git checkout -q "$BASELINE"
+
   count="$(ls "$REPO"/patches/*.patch | wc -l | tr -d ' ')"
   say "applying $count patches"
 
