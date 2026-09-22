@@ -1,7 +1,7 @@
 # srsRAN 4G on macOS ARM64
 
 A port of [srsRAN 4G](https://github.com/srsran/srsRAN_4G) to native Apple
-Silicon: 25 numbered patches, four compatibility shims, and a small set of
+Silicon: 26 numbered patches, four compatibility shims, and a small set of
 `linux/*` uapi headers.
 
 This repository carries no srsRAN source. Clone upstream, apply the patches,
@@ -33,7 +33,7 @@ core included, without a Linux machine or a virtual one in the path. That is
 useful for protocol work, for teaching, and as the foundation for the Osmocom
 ports that follow.
 
-Eight of the 25 patches fix defects that have nothing to do with macOS. Those
+Eight of the 26 patches fix defects that have nothing to do with macOS. Those
 are listed under [Upstream contributions](#upstream-contributions).
 
 ## Architecture
@@ -95,7 +95,7 @@ cd srsRAN-4G-macos-arm64
 
 That installs the Homebrew dependencies, builds and installs usrsctp and
 libsctp-compat, runs the SCTP test suite, installs the `linux/*` headers,
-clones srsRAN, applies the 25 patches, configures, builds, installs, and
+clones srsRAN, applies the 26 patches, configures, builds, installs, and
 verifies that all three binaries start in a clean environment.
 
 Everything lands under `~/sdr-lab` by default; set `SRSRAN_PREFIX` to change
@@ -223,7 +223,7 @@ stack twice.
 
 ## Upstream contributions
 
-Eight of the 25 patches fix defects that are not specific to macOS. They are
+Eight of the 26 patches fix defects that are not specific to macOS. They are
 being submitted separately to `srsran/srsRAN_4G`, each argued on the platform it
 actually affects.
 
@@ -237,6 +237,7 @@ actually affects.
 | [017](patches/017-portable-ifreq-in6-members.patch) | Portable `ifreq` and `in6_addr` member spellings | No behaviour change on Linux; makes the code build on BSD | not yet opened |
 | [019](patches/019-cxx-standard-option.patch) | Make the C++ standard selectable | Anyone building against UHD 4.7 or later | not yet opened |
 | [024](patches/024-cell-search-getopt.patch) | Fix `cell_search` getopt parsing | Every platform. Every flag after the first is silently ignored | [#1545](https://github.com/srsran/srsRAN_4G/pull/1545) |
+| none yet | Count EARFCN ranges inclusively in `srsran_band_get_fd_band` | Every platform. A single-EARFCN range scans nothing, and the last EARFCN of every band is never scanned | not yet opened, blocked on CLA |
 
 Two are open. The remaining six are prepared and held deliberately: patch 001
 is the strongest argument and the smallest diff, so it goes alone as a test of
@@ -250,7 +251,7 @@ reproduction, that stands or falls on its own.
 ## Repository layout
 
 ```
-patches/                 25 numbered patches, each with a commit-style rationale
+patches/                 26 numbered patches, each with a commit-style rationale
 shims/                   The four compatibility headers the patches install
 linux-compat-headers/    linux/* uapi headers plus their installer
 scripts/                 install.sh, install_usrsctp.sh, run-faza1.sh
@@ -290,6 +291,21 @@ device_args = master_clock_rate=23.04e6
 
 This patch is the one change in the series that is deliberately not upstream
 material.
+
+## Patch 026: an LTE cell measurement example
+
+Patch [026](patches/026-lte-cell-measure-example.patch) adds
+`lib/examples/lte_cell_measure`, taken from the `lte-cell-measure` branch of
+`lmesserStep/srsRAN_4G`. It scans a band, or one EARFCN, and prints RSRP, RSRQ,
+SNR and CFO per cell as JSON lines. It is not part of the port and changes
+nothing outside `lib/examples/`.
+
+It was checked on 2026-09-22 against five live cells in Bucharest on a
+LibreSDR B220 mini: 62 clean measurements per cell, no failures. On that board
+keep `-w 15` or lower, and give a single EARFCN as `-s N -e N+1`, because
+upstream counts the range exclusively. The measurements, the reasons for both
+constraints, and the defects the utility carries from its fork are in
+[docs/patch-026-lte-cell-measure.md](docs/patch-026-lte-cell-measure.md).
 
 ## Status and limitations
 
